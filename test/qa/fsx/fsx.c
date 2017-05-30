@@ -62,6 +62,8 @@
 
 #if	defined(Solaris) || defined(HPUX) || defined(AIX)
 #define	warn printf
+#else
+#define	warn printf
 #endif
 
 
@@ -1099,7 +1101,7 @@ main(int argc, char **argv)
 				prterr(fname);
 				warn("main: error on write");
 			} else
-				warn("main: short write, 0x%x bytes instead of 0x%llx\n",
+				warn("main: short write, 0x%x bytes instead of 0x%lx\n",
 				     (unsigned)written, maxfilelen);
 			exit(98);
 		}

@@ -34,12 +34,14 @@ LDFLAGS= \
 	-lboost_serialization \
 	-lcityhash \
 	-lglog \
+        -lz \
+        -lzstd \
 	-lrocksdb \
 	-lleveldb \
 	-lprotobuf \
 	-lpthread \
         -lfuse  \
-        -lz \
+        -lz  \
          $(LIBPROFILER) \
          $(LIBTCMALLOC) \
 

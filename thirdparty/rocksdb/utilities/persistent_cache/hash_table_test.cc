@@ -120,8 +120,12 @@ TEST_F(HashTableTest, TestErase) {
     Node val;
     port::RWMutex* rlock = nullptr;
     bool status = map_.Find(Node(k), &val, &rlock);
+    (void) status;
     if (erased.find(k) == erased.end()) {
       assert(status);
+      if (!rlock) {
+          assert(0);
+      }
       rlock->ReadUnlock();
       assert(val.val_ == std::string(1000, k % 255));
     } else {

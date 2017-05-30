@@ -1,0 +1,20 @@
+/*
+ * Superblock: has information needed to mount a single PQFS instance.
+ * Written to the key-value-store under a well known name.
+ */
+
+syntax = "proto2";
+
+package pqfs.proto;
+
+message Superblock {
+    optional int64 magic = 1;
+    optional string filesystem_name = 2;
+    optional string cloud_uri = 3;
+    optional int64 next_inode = 4;
+    optional int64 next_xid = 5;
+    optional int64 fs_id = 6;
+    optional int64 dev = 7;
+    optional int64 chunk_size = 8;
+    // TODO: default number of partitions per directory?
+}
