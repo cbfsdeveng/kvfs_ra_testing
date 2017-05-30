@@ -1,0 +1,32 @@
+# Sample configuration file for testing.
+name: "cbfs-config-name"
+uuid: "01234567-8abc-def0-1234-56789abcdef0"
+primary {
+    host: "primary-host"
+    epoch: 17
+# date +"%s" gives seconds since epoch.
+    startTime: 1479347671
+}
+
+kvs {
+    type: LEVELDB
+    filename: "mykvfs.db"
+    persistenceRule: LAZY
+    maxSizeBytes: 1000000000
+}
+
+tiering {
+    cacheDir: "/var/cbfs/TestFS"
+    encryption: UNENCRYPTED
+    encryptionKey: "/home/markk/.ssh/TestFS.aes"
+    compression: SNAPPY
+    mirrorLagSeconds: 3600
+    cacheFreePercent: 10
+    cacheSizeBytes:    1000000000
+    maxObjectSizeBytes: 100000000
+}
+
+cloud {
+    protocol: AMAZON_S3
+    endpoint: "MarkKampe-TestFS.s3-website-us-west-1.amazonws.com"
+}
