@@ -1,0 +1,105 @@
+=== 08/18/16 --- mark had a [non-viable] proposal on key distribution/management
+	but further investigation of key rings showed that it wouldn't work
+
+My goal is to keep us out of the key distribution and management 
+business.  I want users to store encryption keys in a standard service, 
+and we will use that service to access the keys.  I have been playing 
+around with keyutils (a standard Linux in-kernel key manager) command 
+and I think it will do what we need.  Next I will test out the C code to 
+access persistent keys.
+
+The general model is:
+
+  * some user will own a particular CBFS (either a human user or a
+    special UID)
+  * that user will create a new persistent user-keyring (probably with a
+    name like CBFS_encryption, but the name does not matter)
+  * that user will add a key to that keyring for each file system
+    (probably with the same name as the mountpoint, but the name does
+    not matter).
+  * when configuring an encrypted file system, the user must provide a
+    keyring name and a key name (e.g. CBFS_encryption_keys:MyMountPoint)
+  * the Tiering Agent must be run under the UID of the CBFS owner.  When
+    it starts, it will request the specified key from the in-kernel key
+    manager.
+
+Creating a new keyring:
+
+    % keyctl newring @CBFS_encryption @u
+
+    % keyctl setperm 0x3f0000    # owner only access
+
+    % keyctl list @u                       # see the new keyring
+
+Creating a key:
+
+    % keyctl add user MyMountPoint "SecretEncryptionKey" %:CBFS_encryption
+
+    % keyctl list %:CBFS_encryption  # see the new key in the key ring
+
+Destroying a key:
+
+    % id=`keyctl request user MyMountPoint`  # look up the key ID
+
+    % keyctl unlink $id
+
+    % keyctl list %:CBFS_Encryption    # see that the key is now gone
+
+Requesting a key:
+
+    from a script ... to understand what is in there
+
+        % id=`keyctl request user MyMountPoint`  # look up the key ID
+
+        % keyctl print $id
+
+            Secret Encryption Key
+
+The C code to create and access keys is trivial, but (as nearly as I can tell) they are not actually persistent.
+
+The keyutils(7) service seems to have been designed as an exchange for (short lived) session keys.  To enable garbage collection, keyutils(7) keys last only as long as someone is holding a reference to the containing ring.  Most keyrings are fundamentally ephemeral (e.g. living only as long as a process or session).  They do offer persistent keyrings, which (by default) are supposed to last three days (timer resetting on each use), but my experiments seem to show that even these do not survive reboots.  We need to keep FS encryption keys around for years.
+
+The other obvious Linux key management framework is LUKS (which is used for disk encryption) ... but it seems to be joined-at-the-hip to (real or virtual) block devices.  It is not a key manager, but a block device encryption service that includes key management (for its own keys).
+
+Searches for "linux encryption key management" turn up
+
+    articles on how to use ssh keys
+    articles on how to use LUKS
+    articles on best practices or how important (and complex) key management is
+    infomercials for (proprietary) full life-cycle key management packages
+    a wikipedia article, listing a few open source key management projects
+
+It does not appear that there is any bundled/incumbent Linux key manager that can do what we need.  So I suggest that we punt on key management (in the prototype):
+
+    client stores the key anywhere they want (in a Linux file) with any permissions they want
+    key file contains only and exactly the encryption key (no surrounding syntax)
+    TA configuration includes the name of the key file (to which TA should have read access)
+
+This is probably the minimum work sufficient to let us demonstrate encryption with per file system keys; and it is not as embarrassing as putting the password in the configuration file.  If we are successful and go forward with a product, we can revisit the question of key management frameworks and key file formats.
+
+Sound reasonable?
+
+Have I missed any good alternatives?
+On 08/18/16 18:02, Mark Kampe wrote:
+>
+> My goal is to keep us out of the key distribution and management business.  I want users to store encryption keys in a standard service, and we will use that service to access the keys.  I have been playing around with keyutils (a standard Linux in-kernel key manager) command and I think it will do what we need.  Next I will test out the C code to access persistent keys.
+>
+> The general model is:
+>
+>     some user will own a particular CBFS (either a human user or a special UID)
+>     that user will create a new persistent user-keyring (probably with a name like CBFS_encryption, but the name does not matter)
+>     that user will add a key to that keyring for each file system (probably with the same name as the mountpoint, but the name does not matter).
+>     when configuring an encrypted file system, the user must provide a keyring name and a key name (e.g. CBFS_encryption_keys:MyMountPoint)
+>     the Tiering Agent must be run under the UID of the CBFS owner.  When it starts, it will request the specified key from the in-kernel key manager.
+>
+
+We discussed per-tarball indices vs I-node offsets in a single master index.  In the near term, we believe we can do everything we need (for tiering files back in) with tarball offsets in a single master index, and do not need per-tarball indices.  But there is not enough information in the master index to enable GC or any interesting analysis ... so for those reasons, we may want to create per-tarball summaries.
+We discussed encryption of pathnames and how that relates to using the tar format:
+
+    in the very short term, encryption is not required, but we want to design for it.
+    obfuscating filenames has been discussed but is clearly weaker than encrypting them.
+    if filenames were clear, someone could untar and then run a decription script
+    if filenames are encrypted (or obfuscated) we would need to provide some sort of conversion tool (either an encrypted tarball converter or a version of tar that understands encrypted tarballs).
+    a modified tar format (e.g. for name encryption) reduces the cogency of our all-your-data-is-just-in-a-tarball story, and we may (at some point) find the tarball format too limiting and decide to move to a proprietary format.
+
+

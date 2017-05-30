@@ -1,0 +1,200 @@
+Assertions:
+
+    index includes a section per tarball
+
+    per tarball section includes 
+    	I#, offset, and length of each included file, 
+	where offset and length include all associated header and data blocks.
+
+    the offset/length in the index will refer to the compressed and 
+    	encrypted (rather than the original) header and data blocks.
+
+    GC is a matter of:
+        determining which tarball sections are obsolete 
+	   (because the associated file have been deleted or updated)
+        determining which tarballs have enough obsolete blocks to make them worth harvesting
+        copying surviving blocks from old tarballs to new ones
+        updating the index to record the new locations (and forget the old ones)
+
+It seems likely to me that:
+
+    if we added deletion information to the per-tarball sections, 
+    we could identify obsolete I-nodes purely by processing the index.
+    since the index includes the (tarball) size of each file, 
+    we can also compute the per-tarball GC profit.
+
+    if we encrypt and compress the blocks for each file as an independent 
+    unit, we can copy out individual files, knowing only the offset and length 
+    ... we do not need to decrypt or decompress.
+
+    since GC does not need to access any information in the tarball, it can 
+    simply read the encrypted information from the old tarball and write the 
+    same info to a new tarball.  the index updates don't care whether or not 
+    the moved data was encrypted.
+
+Problems:
+
+    I do not yet have a clear view on how GC will affect tombstones and emergency recovery:
+
+        when we need to retrieve an evicted directory, we will do so 
+	from the latest copy.  GC may move that copy around, but it 
+	will not alter it ... so any tombstones associated with that 
+	directory should still be fresh.
+
+        during emergency recovery, the user is supposed to recover 
+	tarballs in chronological order.  But GC moves old files later 
+	in the sequence.  Simple file creations should (it seems to me) 
+	still work ... but links (symbolic and hard) may break if an 
+	antecedent gets moved to be after the creation of a link to it.
+
+    Maybe this latter problem is simple, or maybe goofing with operation 
+    order will create a myriad of problems.  It seems to me that we could 
+    eliminate such problems if, rather than write new tarballs, we simply 
+    overwrote the old ones (to be smaller).  But this is not a panacea:
+
+        this will reduce our storage bill, but it will make big-repopulations 
+	more expensive as we have to recover from smaller objects.
+
+        writing new tarballs can be safely done as a make-before-break operation.  
+	Overwriting an existing tarball should really be done as a transaction 
+	with the associated index update.
+
+Following up from yesterday's concerns about the interactions of tarball directory contents and GC ...
+
+Suggested invariant assertions about tarballs and directory contents:
+
+    a snapshot is an integer number of tarballs.
+
+    there is only one copy of any one directory in a snapshot.
+
+    the contents reflect the state of the directory at the end of the snapshot
+
+    tombstones are represented in directory contents (with a new key letter) 
+    and in the index (as a list of I#s whose last link was deleted)
+
+    tombstones represent files that were present before the snapshot and absent after it
+
+Suggestions about the nature of the GC process:
+
+    the GC process removes moot/stale updates, but never changes the order 
+    of operations between snapshots.
+
+    moot operation compression ... we do not tar-up individual log updates.  
+    Rather, we assemble a list of all files that were created, changed or 
+    deleted during the snapshot.  For created/changed files we add them to 
+    the tarball.  For deleted pre-existing files we create tombstones.
+
+    GC analysis ... performed entirely on the index, involves making a 
+    list of updated data/metadata and deleted files and identifying older 
+    updates that are now stale.  The output of this process is a list of 
+    <tarball, offset, length> that can be deleted.
+
+    tarball compaction ... (in principle) one tarball at a time, rewriting 
+    a tarball, eliding the stale files, and producing an index that no longer references those I-nodes.
+    tarball coalescing ... (can be combined with compaction) creating a new 
+    tarball that combines multiple small consecutive tarballs, and producing 
+    an index that combines the inode/tombstone lists of the tributary tarballs.
+
+        this is not only to deal with garbage collection, 
+	but also with small tarballs that were flushed out (small) 
+	to maintain a replication latency.
+
+        tarball coalescing happens only within a single snapshot.
+        the fact that tarball compaction has already been done assures 
+	that there are no conflicts (between earlier and later tarballs)
+
+    snapshot coalescing ... the same process as tarball coalescing, 
+    but operating at the snapshot level (eliding intermediate snapshots)
+    make-before-break transactions
+
+        tarball compaction and tarball/snapshot coalescing can be 
+	deterministically driven by the output of the GC analysis.
+
+        the new tarball names (resulting from GC) will never conflict 
+	with old tarball names
+
+        the first step is to create the new tarballs (in the cloud)
+
+        the second step is to update the index (in the cloud)
+
+        the third step is to delete the stale tarballs (from the cloud)
+
+    non-conflicting tarball names
+
+    I suggest <file system uuid>.<epoch>.<snapshot #>.<segment>_of_<total>.<vers>
+
+        where <epoch> is a number that increases by 1 whenever a new primary is created.
+        where <snapshot #> increases by 1 whenever a new snapshot is taken ... 
+		and we have some TBD convention for dealing with snapshot coalescing.
+        where <segment>_of_<total> reflects the number of this tarball within its snapshot.
+        where <vers> reflects the number of tarball compactions ... 
+		and we have some TBD convention for dealing with tarball coalescing.
+
+    synchronization with CBFS
+
+        if retrieval were based entirely on the index, the only required 
+	synchronization would be to ensure that the TA was always operating 
+	on the basis of the latest index ... trivially done if the TA 
+	drives the above 3-step update transaction.
+
+        if retrieval is based on detour pointers left in base objects, 
+	each of these would have to be updated (in the KVS) after creating 
+	the new index but before deleting the stale objects.
+
+Further thoughts on tombstones (and emergency recovery)
+
+    When the tarball compaction process deletes old directory summaries, it also 
+    deletes the associated tombstones.  This means that we would lose 
+    (from the tarballs) the records of files that had been deleted in 
+    earlier snapshots.
+
+    Since we are talking about persisting index updates to the cloud, 
+    a complete record of all final deletions could still be found in the index.
+
+    Since the directory summary lists all files in that directory, we could 
+    diff the summary with the final results and delete any files that should 
+    no longer be there.  The emergency recovery process could do this 
+    compare-and-prune after everything had been read back in.  
+    So perhaps emergency recovery doesn't need tombstones.
+
+    I no longer recall if/why we thought that tombstones were necessary for CBFS:
+        if, when we tier out a cold directory, we eliminate all of its 
+	(last-link) files from the KVS, there will be nothing left of old 
+	files in the KVS (no tombstones required).
+
+        when we retrieve a tiered-out directory, we will do so on the basis 
+	of the latest summary ... which includes only files that still exist 
+	(no tombstones required).
+
+mark and joe had considerable discussion about indices, tarballs, encryption, 
+GC and tombstones.  Key outputs seem to be:
+
+    indeed we do not need tombstones.  If the tarballs contain directory 
+    summaries, we can infer deletions by comparing extracted directories 
+    with the latest summaries.
+
+    whether directory summaries are a single large tar blob or broken into 
+    shards depends on the needs of directory-retrieval, which Joe is designing.
+
+    the persistent index is probably a list of snap-shots and changed I-nodes 
+    within each ... but there may be an internal form better optimized 
+    for i# to tarball mapping.
+
+    we believe it may indeed be possible to do the GC analysis based 
+    entirely on the index, and that it may be possible to create new tarballs 
+    and an updated index without synchronizing with the primary.  
+
+    Only the deletion of old tarballs requires synchronization with the primary.  
+    Any secondary who finds a needed tarball no longer exists should simply 
+    re-read the index.
+
+    We have not decided whether the index is a single large file or a 
+    collection of files ... but GC and snapshot flattening do not happen in the 
+    active portion of the index.
+
+    This model easily supports read-only clones, and read-only clones that 
+    continue to track the primary.
+
+    We had some discussion of epochs as a means of preventing name conflicts 
+    in split-brain situations.  Preventing those conflicts is a good thing, 
+    but it is not clear if or how much we want to do about conflict reconciliation enabling.

@@ -1,0 +1,41 @@
+mark re: objectivefs
+-------------------------------------------------
+We may be able to offer lower latency (due to our use of KVS and a 
+possible libC bypass) but the high order bits seem quite similar to our 
+own project (full Posix w/local FUSE with optional local disk cache that 
+batches updates into large multi-file in-cloud objects, doing encryption 
+locally before the data hits the wire).
+
+I think we have some cool ideas that they don't ... but I saw enough to 
+earn my respect.  This is not a research or hobby project. Things that 
+caught my attention:
+
+  * they do OSX as well as Linux
+  * S3 and Google Cloud Storage (no surprise given the founders' history)
+
+  * strong data integrity ... presumably per-file/chunk checksums,
+    probably a good idea
+  * what are work load adaptive heuristics?  These pertain to the
+    batching of cloud updates?
+  * "as many concurrent readers and writers as your object store can
+    handle" with "atomic file/directory rename and creation" but I do
+    not see any explicit mention of read-after-write-consistency for
+    independent clients.
+  * multiple file systems per bucket ... I guess we could do that, but
+    why?  I thought buckets were cheap?
+  * live rekey ... (I assume this means change of encryption key) ...
+    using EC2 IAM roles (we would need similar tricks to do our in-cloud
+    garbage collection)
+  * "no data-dependent branches/indices" to "protect against cache
+    timing attacks" ... perhaps I am just an old geezer, but this sounds
+    like a pretty strange "geek brag" ... but their background is security.
+  * it looks like a very small start-up that has been doing this for
+    about 18 months with a ~3mo cadence (and flurry of fixes after each)
+
+They are local.  Perhaps CB would like to talk to them?
+
+
+On 12/01/15 22:00, Joe Hopfield wrote:
+> https://objectivefs.com/features#technical-specification
+>
+

@@ -1,0 +1,92 @@
+User Visible Snapshots
+
+	Cameron believes that user-visible filesystem snapshots are a 
+	key feature for some potential customers.
+
+Snapshot names
+	On filesystems/snapshots, our thoughts are people like NAMES 
+	and not UUID's to work with, so given a bucket name, we can 
+	make sure the NAME is Unique within the bucket when creating 
+	a filesystem or a snapshot (in snapshot case, unique name for 
+	the given FS Name). 
+	
+	This is like ZFS
+
+Semantics & UI
+
+	Snapshots are different than normal fault-in because the snapshot is 
+	an independent mount at a pre-designated point in time, whereas 
+	fault-in wants the latest version of a file or directory.
+
+	NetApp-like: there's a hidden directory beneath each directory 
+	(or just at the top of tree??) that give access to periodic 
+	snapshots (views of the filesystem at particular points in time in the past).
+
+	This directory (.snapshot) is not shown by readdir, but an opendir 
+	and readdir of ".snapshot" will show what snapshots are available, 
+	specified in some somewhat human friendly date format. 
+	(.snapshot/yyyy-dd-mm-23:59:50). 
+	
+	When that dir is opened, it presents as if it were the parent dir at 
+	the point of that snapshot (but read-only). 
+
+	(?What about ".." - does that act like a mount, or does it move 
+	around within the snapshot, ignoring the .pqfs/snapshot part?).
+
+	Note that .snapshot is the path in netapp, .zfs/snapshot is in zfs. 
+	So we could present as .pqfs/snapshot/..., and possibly other 
+	interesting synthetic dirs and files under .pqfs (I think cameron suggested this).
+
+	What snapshots are available is determined by what snapshots were requested 
+	explicitly via RESTFUL api, or via scheduled snapshots (controlled either via 
+	RESTFUL api or by config files).
+
+	Each snapshot corresponds to a specific immutable index in the cache or cloud.
+
+	Snapshot is an independent mount While accessing something under pqfs/.snapshot, 
+	the fact that that same object may exist in the non-snapshot filesystem is 
+	ignored. There's a separate inode. We don't implement copy-on-write, 
+	the inodes for a given snapshot are all part of an independent read-only 
+	mount (similar to the way my snapshot code currently accesses the KVS, but 
+	in this case would need a complete mount, not just access via FilesystemManager).
+
+	Example Operations
+	(See also zfs documentation: http://docs.oracle.com/cd/E19253-01/819-5461/gbiqe/index.html)
+
+		Listing snapshots
+		ls .pqfs/snapshots
+		ls .pqfs/snapshots/tuesday
+
+	To list available snapshots, need the list of indexes. 
+	This could be expensive/slow (if not in local cache). 
+	This is probably ok for now. 
+	Eventually keep a list of indexes (if not full contents) in proxy cache.
+
+	Listing within a snapshot
+		The .pqfs/snapshot appears under a potentially non-root directory. 
+		When it's .pqfs/snapshot/tuesday dir is opened, need to build the 
+		list of objects in the snapshot at that path. 
+		How: We will know the inode number of the directory 
+		(what about dir renames?? 
+		How does this work in zfs & netapp, if the dir is new??). 
+		Do we extract a tar entry for the directory? 
+		What does the index tell us?
+
+	With info we current have in the index and tarballs, we'd have to extract 
+	any tarballs that contain the dir inode. These hopefully also have the 
+	files that were under that dir. 
+	Note that this could mean extracting ALL non-garbage-collected tarballs (impractical).
+
+	Could fake a point-in-time (xid-in-time) dir contents for directories in a 
+	tarball by adding a .dirlist file under each. 
+	This would contain (as a file) the list of tuples we need to respond to a 
+	readdir on that inode. 
+	(perhaps the .dirlist file is .dirlist/inode? - until we modify tar format, at least).
+
+Index:
+	Currently just contains inode# => tarball. 
+	The tarball must be extracted to find a file 
+	(also, do I even have inode numbers?). 
+	We need inode# to offset of entry in tarball, and that 
+	entry must have know dir contents? How?
+

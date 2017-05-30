@@ -1,0 +1,236 @@
+BlueSky ... intelligent tiering of data to the cloud with in-cloud garbage collection
+
+	http://cseweb.ucsd.edu/~voelker/pubs/bluesky-fast12.pdf
+
+Kai Ren <kair@cs.cmu.edu>, Garth Gibson <garth@cs.cmu.edu>
+
+    Paper   TableFS
+	http://www.pdl.cmu.edu/PDL-FTP/FS/tablefs.pdf (2013)
+
+	Gibson is a professor at CMU
+	Kai Ren is a PhD student
+
+    background:
+
+    	The goal was to create a file system, optimized for
+	small, random, and meta-data.  They proposed to do
+	this by using a FUSE to implement a file system on 
+	top of LevelDB.
+
+    architecture:
+
+    	Use LevelDB tables to implement directories, I-nodes, 
+	and small files.  LevelDB manages the indexes and on
+	disk data.
+
+	Large files (>4K) are stored in the underlying file system
+	under a two-level hierarchy.  Top level directories for each
+	group of 10,000 I_nodes, with a file (whose name is the I#)
+	for each large file.
+
+	Each file is assigned a 64-bit I-node number.
+		they are globally sequential
+
+	Directories:
+		key = 64-bit parent directory I# + 64-bit hash of name
+		value = full name, I_node # and attributes
+			... and contents if the file is small
+
+	prefixing each entry with the parent directory i# makes it
+	simple/efficient to read the contents of a directory with
+	a range search.
+
+	having the second 64 bits be the hash of the file name
+	makes it easy to deterministically generate the full
+	key for the desired file.
+
+	Hard links:
+		If a second link is created, move the file into
+		its own entry with key=<I#,null name> and each
+		link has the I# in the attributes, but not the
+		contents.  They don't bother reconcolidating
+		the entries after a hard link is deleted.
+
+	Locking and Consistency:
+		LevelDB did not have an atomic read/modify/write
+		so they had to implement their own higher level 
+		locking.
+
+		They had LevelDB flush the write-ahead log
+		synchronously every 5 seconds.
+
+    Performance (vs Btrfs, Ext4, XFS)
+	metadata writes: 3-5x faster than the others
+		due to substantially reduced disk writes, 
+		due to the batching of updates by LevelDB
+	metadata reads: 2x faster than Btrfs/Ext4, comparable to XFS
+		reads can trigger compaction LevelDB 
+	small file reads: 2x faster than the others
+	small file creates: slower than Btrfs and EXT4
+		this is because of FUSE overhead on data transfers
+		
+    My Comments:
+
+    	This project seems extremely relevent, and their basic data
+	representation quite reasonable.  Should we perhaps try to
+	get in contact with Kai Ren?
+
+	I am disappointed to hear about the overhead of passing data
+	through a FUSE ... but I observe that:
+	(a) our competition is not a local file system, but NAS, where
+	    the create rate differential is probably much bigger.
+	(b) open/read speed (for processing) is probably more important
+	    to optimize than write speed (for data generation).
+	(c) They only raised this issue in the context of writes, 
+	    but I suspect it is a problem everywhere.  They didn't 
+	    bother mentioning it in other contexts because they 
+	    won those tests anyway.
+	(d) They were comparing LevelDB on disk with other file
+	    systems on disk.  A mem-rata like journal approach might 
+	    be much faster than LevelDB for WORM data.
+	(e) if this is a business, we could redo it as a kernel mode 
+	    file system to make it even faster.  
+
+Andreas Zwinkau <qznc@web.de> (2009)
+
+    A professor at the Karlsruhe Institute of Technology
+
+    Article
+	http://beza1e1.tuxen.de/articles/kvfs.html
+    Code
+    	http://github.com/beza1e1/kvfs
+
+    background:
+
+	He was pursuing a highly scalable distributed file system.
+	He chose this architecture because it is pretty easy to build
+	a scalable distributed key/value store.  
+
+    	He implemented a python Fuse that works with: 
+		a python dict
+		BerkeleyDB
+		Scalaris
+
+    his design comments:
+
+	problem: implementing the directory hierarchy
+
+	solution: 
+		use SHA256 of contents as a file handle
+		a directory is a set of <name,metadata,SHA> tupples
+		
+		this works hierarchically, as the I# of a directory
+		is the SHA of its contents
+
+	my comments:
+		use of SHA as an I-node number would mostly work
+		for WORM files, but has problems for r/w fs:
+
+			files do not have persistent inode numbers
+
+			this is effective a Merkle tree, and any 
+			change to any file changes every directory
+			up to the root.
+
+		... but it does give us time-travel/snap-shots
+
+	problem: how to enforce multi-user access control when the
+		underlying data is all in a single key store, with
+		its own protection.
+
+	solution: punt
+    
+    his retrospective observations:
+	
+	The Scalaris implementation is very slow.
+	He also considered integrating it with:
+		MemCached, Voldemort, Cassandra and LightCloud
+
+	Hard links cannot be supported (because they are links to contents)
+
+	He concluded that it might be better to add real I-nodes between
+	directory entries and file contents.
+
+
+RedisFS
+
+   Author: Steve Kemp (2010-present)
+
+   Code:
+   	http://git.steve.ork.uk/skx/redisfs
+	(about 2KLOC)
+
+   background:
+
+	Redis is a popular in-memory KVS with optional persistance.
+	Originally sponsored by VMware (2009), since 2013 by Pivotal.
+
+	It supports lists of strings, sets of strings, sorted sets
+	of strings, and (key/value) hashes.
+
+	It also supports snapshots.
+
+	Perisistance is achieved with (daisy-chained) master/slave
+	pairs who subscribe to update channels.
+
+   schema:	(keys beginning with SKX are "reserved")
+   	SKX:INODE:#:NAME	(filename within its parent directory)
+   	SKX:INODE:#:TYPE
+	SKX:INODE:#:MODE
+	SKX:INODE:#:GID
+	SKX:INODE:#:UID
+	SKX:INODE:#:SIZE
+	SKX:INODE:#:ATIME
+	SKX:INODE:#:MTIME
+	SKX:INODE:#:CTIME
+	SKX:INODE:#:DATA	(the actual data payload)
+	SKX:INODE:#:TARGET	(symlink destination)
+	SKX:INODE:#:LINK	(seems to be hard-coded to 1)
+
+
+	Directories are implemented as Redis SETs
+		SKX:DIRENT:#, contents is a list of I-node #s
+
+	Root directory has a reserved Inode number (-99)
+	SKX:GLOBAL:INODE	highest allocated I-node number
+
+
+   Notes on implementation:
+
+	This is a pretty simple implementation that doesn't seem to have
+	much to teach us.
+
+	The reason he can't implement hard links is because he associates
+	a unique name with each I-node number.
+
+	Much of the create/delete code is managing all the properties associated with a file
+
+
+Jonathan Leibuusky: ETCFS (2014)
+
+   An architect/lead at Gilt
+
+   Code
+   	http://github.com/xetorthio/etcd-fs
+	(a few hundred lines of code)
+
+   background:
+
+   	He likes the ETCD key value store, and was inspired by
+	Apache ZooKeeper (written in Go), so decided to do a
+	Go implmentation of a FUSE on top of ETCD.
+
+   observations:
+
+	caveats:
+		My understanding was limited by not understanding the ETCD APIs
+
+	It seems that:
+		ETCD has a notion of directories ... but this may be namespace
+		a file name is a simply property
+		the value is the byte-string contents of the file
+		he correctly implemented partial insert/append/rewrite
+		attributes are hard coded based on file type
+
+	Bottom line:
+		A toy with no lessons to teach

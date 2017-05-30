@@ -1,0 +1,28 @@
+====== 02/16/17 mark and joe discussed the proxy manager in the context
+		of how the TOA would interact with it
+
+We also discussed the proxy manager and his relation to the TA/persister/evicter:
+The proxy manager has a newObject method that takes a file system name and 
+object name as a parameter, and returns a cachedObject.  
+
+	The cachedObject has getName(), commit(statusObject*) and abort() methods.  
+	A commit causes the associated file to be pushed, and gives the proxy 
+	manager a statusObject to be updated when the push succeeds.  
+	Note that these methods work as well for index and status objects as for tarballs.
+
+	The persister constructor takes as parameters
+
+	    a mounted kvfs (snapshot)
+	    a log manager (for getting information about recent updates)
+	    an index manager (for recording information about archived files)
+	    a proxy manager (for creating and pushing objects)
+
+	Persister.snapshot(minXid,maxXid)
+
+	    uses the log manager to get information about the selected updates
+	    reads the kvfs snapshot to get data and metadata
+	    uses the proxy manager to create a tarball
+	    uses the index manager to create an index entry describing the tarball
+	    unmounts the snapshot when it is done
+	    instantiates, initializes and returns a status object for the snapshot
+

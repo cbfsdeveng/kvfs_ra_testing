@@ -1,0 +1,288 @@
+=== Collected musings and discussions on the goals and approach
+Mark:
+
+    We are trying to satisfy four non-independent requirements:
+
+        we must support the encryption of all data pushed to the cloud.
+        we must provide a means for users to recover their data without our software.
+        we should provide compression of all data sent to/from the cloud.
+        we should provide in-cloud garbage collection.
+
+    Option 1: encrypt the (compressed) tarball
+
+        This buys us everything except in-cloud garbage collection.
+
+    Option 2: encrypt the files within the tarball
+
+        This  buys us in-cloud garbage collection, but eliminates the possibility of 
+	compression and complicates the user recovery process (after they untar they 
+	have to run another script to do file-by-file decryption).  Also, this 
+	encrypts the data, but not the file names and information.
+
+    Option 3: compress and then encrypt the files within the tarball
+
+        This buys us in-cloud garbage collection and compression but does so 
+	at the cost of further complicating the user recovery process 
+	(after they untar they have to run another script to do file-by-file 
+	decryption and decompression).  And, this too encrypts the data, 
+	but not the file names and information.
+
+    It would be great if tar had an option for per-file encryption and 
+    compression, but absent that, I fear that option 3 may be the least-bad choice.  
+    Blue Sky did not face this problem because the did not insist on using an 
+    existing open storage format, and so were able to encrypt and compress what 
+    they wanted when they wanted.
+
+
+7/19/16 comments from CB and Joe:
+
+	1. really like the idea of decoupling suggested here. The TA will have 
+	the encryption feature and PQFS can operate independently with or without 
+	the tiering agent. In essence the TA is a feature add-on to the base PQFS 
+	or KVFS POSIX filesystem.
+
+	2. I will be OK as a customer if a tool is provided for restore/recovery. 
+	I still won't feel locked in if I can get to my data and recover it using 
+	a tool. That fact that it's almost tar like is a + and in addition if you 
+	explain to me that the reason for this is encryption related and if I 
+	decide to not use encryption (which is almost no one), then it could 
+	easily be readable in clear form with tar would satisfy most sophisticated 
+	users, so no real worries there.
+
+	3. encryption algorithms
+	we have an implementation based on open source AES128/256 that could be 
+	leveraged. I think it works on objects and is well tested, so running 
+	the same thing on a tar object might be the simplest approach.  
+
+	IRC, the main motivation for this hard separation is to prepare for 
+	moving PQFS into either a libc-intercept or into the kernel.
+
+	The TA and PQFS are already largely separate (though they run in the 
+	same process). The tiering out agent accesses the filesystem via a 
+	mounted snapshot of the KVS. Moving the "out" part of the TA into it's 
+	own process and having it access PQFS+log via some form of RPC would 
+	not be huge leap. 
+	
+	Tiering/fault-IN requires PQFS to have a way to reach out to the 
+	tiering agent (if any) and request files, so the TA is both client and server.
+
+	Encryption infrastructure: I have no strong opinions about this. 
+	I suspect that real customers will want to at least have every PQFS 
+	instance or bucket use a different key, preferably managed through 
+	their own infrastructure. 
+	
+	A single password that unlocks all of a customer's filesystems doesn't 
+	sound like best-practices to me.
+
+	 Another possibility (for some customers) would be server-side encryption. 
+	 TA connects via ssl (PKI), and amazon encrypts it before it gets to disk. 
+	 In theory, it's somewhere in amazon-land in the clear, ... maybe that 
+	 would be enough for some customers?
+
+	encrypted-compressed-tarballs vs tarballs of encrypted compressed files... 
+	The former is required to do in cloud gc without password, correct? 
+	Unless we really relax our tar-like requirements, I don't see how we have any other choice.
+
+07/19/16 === Mark, further musings on encryption
+
+To whom is the password a parameter?
+
+	At an abstract level, it seems to me that (although they cooperate
+	intimately) the PQFS (Posix atop a key value store) and the Tiering Agent
+	(guy who moves data between a PQFS and an object store) can be considered
+	as semi-independent components.  With this in mind, encryption has little
+	to do with PQFS.  It is something the Tiering Agent does while moving data
+	between the PQFS and the Object Store.
+
+	- We can decouple the configuration of the PQFS (a mount point and a key
+	value store instance) from the configuration of the Tiering Agent (a local
+	cache and a remote bucket).
+	- It should be possible to run a PQFS without a Tiering Agent, or to
+	start a Tiering Agent on a PQFS that has been running without a TA for a
+	long time.
+	- A TA could be an independent service that reaches out and binds (e.g.
+	with some special call) to a PQFS instance.
+	- We should make the bucket path, tiering attributes, and
+	transmission/encryption attributes part of TA configuration.
+
+How do we manage keys?
+
+	In the very short term we can do any sleazy thing we want, but that won't
+	hold up very long.  I don't like reinventing wheels in general, and in
+	particular I don't want to get anywhere near this one.
+
+	- perhaps we can get what we need from Linux keyrings (which I have
+	never used) ... I will try to figure out if it can manage keys for
+	user-mode apps like us.
+	- ssh is about public key management, and we need a symmetric key.  That
+	doesn't stop us from storing our keys (which come from heaven only knows
+	where) in the .ssh directory.
+	- other suggestions for password/key generation and storage?
+
+What do we encrypt?
+
+	If we wanted to be as tar as possible, we would only encrypt data.  This
+	would be a fairly clean use of the tar library, and make it easy to untar a
+	tree and then run a post-pass to decrypt them.
+
+	It would have the psychological advantage of letting people see that all
+	their files are still there.  But this is also a problem.  Leaving the file
+	names in clear text would expose more information than many people would be
+	comfortable with.  In-cloud GC does not care about file names and wouldn't
+	mind the encryption, but emergency recovery (without us) would no longer be
+	able to simply untar the file (and then run a decryption pass).  Instead,
+	customers would essentially have to use our version of tar (which we could
+	easily provide) that could decrypt the file names and contents.  This is a
+	simpler and cleaner recovery, but we lose the psychological advantage, and
+	people can no longer recover their data without us.  And in fact, we are no
+	longer tar-balls ... but rather tarball-inspired.
+
+How do we encrypt it?
+
+	Eventually, we probably want to use somebody's DLL based encryption
+	framework that lets users choose their encryption algorithms.  But
+	initially, I don't think it matters.
+
+How this changes TA/PQFS communication?
+
+	Tar and untar are simply Posix clients ... with the down-side that they
+	cannot be used to restore a file to the correct I-node number (required for
+	most hard-link implementations).
+
+	I think that for both encryption and tiering data back in we have to move
+	to new APIs to ...
+	   - create a file with a specified I#
+	   - open files and specify link targets by I#
+
+	In addition to which the TA will probably need APIs to
+	   - open (and release) a specified version of a file
+	   - add detour annotations to a tiered out file
+	   - hand-shake on file/chunk recovery
+
+Overall Structure of the TA
+
+	Is there a TA instance per PQFS instance?
+
+	Is there a TA instance per local repo cache (permitting us to switch
+	caches)?
+
+	Is there a TA instance per system (with a single repo cache)?
+
+	How does a PQFS instance come to be bound to a TA instance?
+
+==== 07/29/16 follow-ups between Joe and Mark
+
+
+On 07/21/16 18:48, Joe Hopfield wrote:
+> IIRC, the main motivation for this hard separation is to prepare for 
+> moving PQFS into either a libc-intercept or into the kernel.
+I think it is essential for those reasons, but I also like it from a 
+flexibility, independent testability, and easier maintainability point 
+of view, and architecturally it is increasingly common to separate the 
+primary (highly optimized real-time data paths) from asynchronous 
+background operations.
+> The TA and PQFS are already largely separate (though they run in the 
+> same process). The tiering out agent accesses the filesystem via a 
+> mounted snapshot of the KVS. Moving the "out" part of the TA into it's 
+> own process and having it access PQFS+log via some form of RPC would 
+> not be huge leap.
+> Tiering/fault-IN requires PQFS to have a way to reach out to the 
+> tiering agent (if any) and request files, so the TA is both client and 
+> server.
+The key points of contact I see are:
+
+  * the log ... which I see as a file, whose committed updates are
+    external to the KVS
+  * accessing (and creating/updating) files by I#
+      o we could implement semi-standard by-I# system calls
+      o or we could just let the TA be another client of the same KVS
+  * version (maybe snapshots) management for the files being tiered out.
+  * a mechanism by which the PQFS can:
+      o ask the TA to bring something back
+      o await the completion of that operation
+
+> Encryption infrastructure: I have no strong opinions about this. I 
+> suspect that real customers will want to at least have every PQFS 
+> instance or bucket use a different key, preferably managed through 
+> their own infrastructure. A single password that unlocks all of a 
+> customer's filesystems doesn't sound like best-practices to me.
+
+Agreed ... a password per PQFS instance is the obvious granularity.
+But that doesn't speak to the scope of a TA (per PQFS, per bucket, per 
+cache, per object store?)
+
+>  Another possibility (for some customers) would be server-side 
+> encryption. TA connects via ssl (PKI), and amazon encrypts it before 
+> it gets to disk. In theory, it's somewhere in amazon-land in the 
+> clear, ... maybe that would be enough for some customers?
+Server side encryption (of everything) would mean that the GC agent had 
+to know the password, and it seems a very good thing to me that we be 
+able to perform that service without access to the underlying data.  But 
+if the data lives in cloud, it might make sense to do GC from the node 
+that hosts the TA ... in which case it would have access to the 
+password.  I am inclined to like 3rd party, in-cloud, GC (as a possible 
+revenue source if nothing else), but I wanted to acknowledge the 
+possibility of having partnering the GC agent with the TA (who knows the 
+password).
+> encrypted-compressed-tarballs vs tarballs of encrypted compressed 
+> files... The former is required to do in cloud gc without password, 
+> correct? Unless we really relax our tar-like requirements, I don't see 
+> how we have any other choice.
+I assume you meant the LATTER is required to do in-cloud GC w/o password.
+I too see no choice ... but was just trying to call out the corner into 
+which we seem to be painted :-)
+
+Do you agree that we have to encrypt (or at least be able to encrypt) 
+the file names too ... meaning we have a bastardized tar? I'd rather not 
+do this ... but exposing the names seems wrong to me.
+
+===== 07/26/16 Mark on when we should do encryption/decryption
+
+This morning I was experiencing the tension between encrypted names and 
+straight tarballs ... when a simple idea suggested itself to me: do the 
+encryption/decryption in a (logically) separate pass.
+
+THE CONCEPT
+
+  * In principle, we archive and recover data to/from stock tarballs.
+  * Logically, we encrypt and compress them before sending them to S3,
+    and decrypt/decompress them when we pull them back.
+  * We provide a decrypt/decompress utility (open-source, with Posix and
+    Windows binaries) that will turn an encrypted/compressed tarball
+    into a standard tarball.  Once somebody runs this utility they can
+    get at their data with ordinary tar.
+
+This provides a much simpler extraction/recovery mechanism than untaring 
+and then running a decrypt/decompress script on every file.
+
+WHAT WE ACTUALLY DO
+
+	I could make an argument for why it is OK to keep the local tarball 
+	cache decompressed and decrypted, but I think it is wrong.  More 
+	security is better.  The cache contains exactly the same stuff that S3 
+	does (encrypted and compressed).
+
+	Thus, we compress and encrypt as we create the tarball, and we 
+	decompress and decrypt as we process them to recover data.  The 
+	free-standing recovery utility only a recovery tool.  It is not part of 
+	the normal tool chain.
+
+HOW WE TEST CONVERSION
+
+	 1. We use a Merkle tree generator to create data and produce a
+	    corresponding log.  I believe it is possible to also generate
+	    incremental updates to a Merkle tree.  We would generate a lot of these.
+	 2. The TA normally operates out of the KVS, but it has a (testing)
+	    version that can operate out of a Posix file system. This enables us
+	    to test data encoding and decoding independently from PQFS.
+	 3. We test by ...
+	     1. generate a test tree and update series (with a known checksum
+		for each)
+	     2. in an unencrypted version, confirm the TOC contains exactly the
+		expected files
+	     3. recover random sequences of updates, reconfirming the recovered
+		checksum for each
+	 4. This works for file names and contents.  Attributes we deal with
+	    separately.
+
+

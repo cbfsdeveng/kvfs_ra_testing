@@ -1,0 +1,59 @@
+Hi guys,
+
+While searching for ways to integrate with amazon cloud drive, I found this command line tool rclone.  We can try leveraging the tool as-is or its library to implement the proxy.  
+
+Here is the list of cloud drive it supports.
+
+    Google Drive
+    Amazon S3
+    Openstack Swift / Rackspace cloud files / Memset Memstore
+    Dropbox
+    Google Cloud Storage
+    Amazon Drive
+    Microsoft One Drive
+    Hubic
+    Backblaze B2
+    Yandex Disk
+    The local filesystem
+
+Features:
+
+    MD5/SHA1 hashes checked at all times for file integrity
+    Timestamps preserved on files
+    Partial syncs supported on a whole file basis
+    Copy mode to just copy new/changed files
+    Sync (one way) mode to make a directory identical
+    Check mode to check for file hash equality
+    Can sync to and from network, eg two different cloud accounts
+    Optional encryption (Crypt)
+    Optional FUSE mount (rclone mount)
+
+
+Supported Platforms:
+
+    Windows
+        386 - 32 Bit
+        AMD64 - 64 Bit
+    OSX
+        386 - 32 Bit
+        AMD64 - 64 Bit
+    Linux
+        386 - 32 Bit
+        AMD64 - 64 Bit
+        ARM - 32 Bit
+    FreeBSD
+        386 - 32 Bit
+        AMD64 - 64 Bit
+        ARM - 32 Bit
+    NetBSD
+        386 - 32 Bit
+        AMD64 - 64 Bit
+        ARM - 32 Bit
+    OpenBSD
+        386 - 32 Bit
+        AMD64 - 64 Bit
+    Plan 9
+        386 - 32 Bit
+        AMD64 - 64 Bit
+    Solaris
+        AMD64 - 64 Bit

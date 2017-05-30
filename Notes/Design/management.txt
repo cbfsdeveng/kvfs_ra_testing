@@ -1,0 +1,126 @@
+Requests to create a snapshot need to be persistent 
+(i.e., if we crash while creating a snapshot, we should 
+restart snapshot creation on reboot).
+
+Requests contain: 
+	optional human-readable name, 
+	internal id of some sort, 
+	xid range, 
+	state (requested/queued, inodes collected, tarballs being written to proxy, tarballs complete in proxy, tarballs (and index) being copied to cloud, complete.
+
+In theory a second request could be created while a 
+previous request is still in progress. We should make 
+sure that various filenames being created don't collide 
+(we think this is currently ok).
+
+For now, polling is fine for agents that want to watch the progress of a snapshot.
+
+Logs: unless we depend on continuous snapshots being requested, 
+we need to implement log chunking (out and in). 
+Currently the fs-change-log is read in from local disk on 
+startup, and written out only on shutdown. This is a little broken. 
+The rule should be:
+  TOA only deals with logs that have been persisted (for restart).
+
+Possible issue:
+  LevelDB snapshots (snapshots of the KVS) are transient, 
+  	so on restart, it's possible that the snapshot wont' 
+	be able to get contents of the filesystem as of a 
+	particular xid. 
+	In this case the snapshot needs to be marked as a failure.
+
+  Handling failed snapshots is a policy decision based on:
+	Type of snapshot (user-visible or periodic backup)
+	Type of failure (transient or persistent - if we can't 
+		reach the cloud after a reasonable amount of time, 
+		it may or may not be worth continuing to do snapshots, 
+		but a human should probably be informed).
+
+
+there were several open questions we discussed today:
+
+    size ... there are multiple sizes, none of which correspond to the traditional file system size:
+        KVS max sizes (memory and disk) ... used to create the KVS instance
+        local proxy cache size (max disk) ... managed by the TOA
+        maximum cloud storage (for snapshots and live objects) ... managed by the in-cloud GC
+        all of these have default values that can be overridden, but none are mandatory
+
+    deletion
+        local ... blow away all local info and data, 
+		  make FS no longer known on this node
+        cloud ... tag all objects for deletion (by the in-cloud GC agent), 
+		but leave index as a record of its existence. 
+		Note that if archival (e.g. Glacier) has been enabled 
+		for this bucket or set of objects, that it is possible 
+		to recover a file system that has been deleted from the cloud.
+
+    file system creation
+        does not involve a runnable CBFS instance.  
+	It merely creates a configuration file (on a cloud) that contains 
+	all the global parameters, whose name has a form like 
+	<common-name>-<UUID>.config.  
+	
+	If a common name is unambiguous (in the bucket) it can be used.  
+	Otherwise the UUID must be used to disambiguate.
+
+    creating a local file system instance
+        import the cloud file description 
+		(need cloud endpoint and name, UUID or both).
+        populate local configuration file 
+		(kvs info, proxy cache info, and local mount-point).  
+		
+	All but the mount-point have default values (which can be overridden).
+        the ordering is non-obvious, but it seems to me that if we can find a 
+	copy of the config information in the local cache, we should be able 
+	to use it without going to the cloud.
+
+    create the KVS instance, proxy-cache paperwork, and local mount description.
+
+    slave instances
+        a slave instance mounts a snapshot ... period.
+        we can then come up with smart slave instances that progressively track new snapshots.
+
+    there should be a promote to master command (arg: previous epoch)
+        pulls the latest index and epoch list from the cloud
+        confirm that the specified epoch is indeed the latest
+        create a new epoch with me as the master and push it to the cloud
+        pull the epoch list from the cloud and confirm that I am still the master
+        move to the latest snapshot
+        turn my copy of the file system read-write (involves KVFS and TOA)
+        in version 1 we will require human beings to do split-brain avoidance.  
+
+	Later we may be able to use some global service to enable automatic promotion.
+
+
+=== 02/24/17 discussion of management operation implementation
+
+Tony asked what the status/configuration representation should be on the 
+back-side of the RESTful APIs.  Joe suggested that this is not really 
+what protocol buffers are meant for, and Mark suggested that these might 
+just be synchronous get/set methods in the underlying KVFS C++ classes.  
+But this question can be deferred a few weeks until Tony is ready to 
+start implementing the extended back-side functionality.
+
+There was a brief discussion of cloud vs local operations, and 
+our current story is that there are a small number of purely 
+cloud/bucket operations 
+   (create file system, list file systems, delete file system).  
+All other operations are purely local.  
+(we are waiving our hands at how future GC operations fit with this model).
+
+In a related note, CB suggests that the handle on a file system should 
+not be UUID, but TAG-UUID (where TAG is a mnemonic, but not necessarily unique, 
+name chosen at create time).  
+If TAG is bucket-unique, that identifies a file system.  
+If not, it at least enables us to generate a list of candidates.
+
+There was some discussion of web-server back-end involvement in 
+cloud commands (like fs creation) and we reaffirmed that the CLI 
+goes directly to the cloud for these (without involving KVFS).  
+The cloud management commands can reasonably be written in python 
+and the in-cloud configuration info can reasonably be json. 
+Protocol buffers are more appropriate as an internal representation 
+(e.g. messages between services and objects in the KVS).
+
+wrt json parsers, back in October, Mark looked at several and 
+wound up settling on libjson-c as the most reasonable

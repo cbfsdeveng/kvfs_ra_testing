@@ -1,0 +1,180 @@
+=== Basic goals ====
+Given:
+	a bucket URL
+	a file system name
+	an optional encryption key
+
+It should be possible to find, in the cloud, everything we
+need to know to create a local instance of that file system.
+The local configuration information (KVS type, sizes, persistence
+rules, etc) should all default so that it is possible to create
+a local instance without doing any additional configuration.
+
+=== initial speculation ====
+PQFS configuration and start-up seem obvious.
+
+    It seems to me that the primary parameters a PQFS instance 
+    should need are obvious mount options:
+
+        a KVS instance (and type)
+        a mount point
+
+    Other parameters (fsname, sizes, thresholds, flushing criteria, 
+    etc) can probably be specified at mkfs time, and recovered 
+    (from well known properties) when the PQFS is mounted.
+
+    If a PQFS instance is FUSE mounted, the daemon that serves the 
+    requests will be automatically started when the file system is 
+    mounted.  
+    
+    If the PQFS instance is in a libc intercept, the first 
+    intercepted open can start the required threads within the process.
+
+TA configuration and start-up are not so obvious
+
+    A TA instance would need:
+
+        a cache location
+        a bucket URL
+        a PQFS instance
+        compression/encryption options and password
+
+    Perhaps these could be read from a configuration file.  
+    Who would create it, and where would it be stored?
+
+    Who would create the local proxy cache?  
+    Is this a mkfs-time thing, or more independent of the KVS?
+
+    Who would start the TA associated with each PQFS?  The PQFS instance?
+
+
+On 07/27/16 12:48, Joe Hopfield wrote:
+	PQFS config - I think this can probably fit in with the existing 
+	linux mount infrastructure by implementing an /sbin/mount.pqfs "mount helper".
+
+	 MKFS vs startup: it would be good to clean this up. Currently, 
+	 starting the fuse_kvfs binary will either do a mkfs and mount it, 
+	 or remount the existing one if there's already a KVS instance. 
+	 These should be two separate programs.
+
+	IIRC Cameron was wanting to keep the TA config info in the cloud 
+	as much as possible?
+
+	Clearly everything there is to know about the snapshots must be 
+	in the cloud, but I'm not sure that TA configuration makes sense there:
+
+	    the bucket URL must be known to get to the cloud
+	    the password, obviously cannot be stored in the cloud
+	    when-to-persist parameters would seem to me to be more 
+	    	associated with a particular server (the current primary) than the (global) cloud archive.
+	    the binding between the TA and the local PQFS/KVS is almost surely local
+
+	This makes me think that we could initialize local configuration 
+	based on default values in the cloud, but that the live 
+	configuration data might be different on each (primary) 
+	PQFS implementing server.  But I think it might make total 
+	sense to have the option of creating a PQFS by pointing it at 
+	the cloud-bucket in which it is archived.
+
+
+Followed by a discussion and proposal
+
+	All client management communication is with a free-standing 
+	CBFS web server.   Most configuration and status operations 
+	can be handled by that server.  
+	
+	If an operation involves communication with a CBFS owner 
+	(e.g. snapshot) the request will still go to the common server, 
+	who will (behind the scenes) have the necessary discussion with the CBFS owner.
+		this is easier for clients, because there is only one 
+			base URL for all CBFS operations.
+		this is easier for the CBFS owner/Tiering Agent because 
+			they don't have to run a web server.
+		this gives us more design/implementation flexibility 
+			by decoupling our internal protocols from the 
+			RESTfull client management protocols.
+
+	All file systems will be known by human readable/pronouncable 
+	names (vs UUIDs).  These names need not be the same as the 
+	mount point, and only need to be unique
+	    per client
+	    per bucket
+
+	Configuration information for a CBFS instance will be stored 
+	in a single, per filesystem, json format file, stored in a 
+	well-known place (perhaps in the proxy cache).
+
+		it will contain a distinct object for each part of 
+		the configuration (KVS, CBFS, Tiering, Proxy, cloud)
+
+		updates made on a primary site will be pushed to the 
+		cloud (to be used for recovery, or to seed the 
+		initialization of a slave copy).
+
+	This suggests that there is one global parameter (for the TA and Proxy):
+
+		the local directory where cloud objects are cached
+		we can have a hard coded default
+		we can make it an environment or command line parameter 
+			to both the TA and Proxy.
+
+		All other parameters can be found 
+		(based on the file system name) in the local per 
+		file system configuration file.
+
+	To recover or create a slave, an additional (one-time) 
+	parameter would be required: 
+		the bucket URL (from which the configuration file could be recovered).
+
+=== 10/16/16 ... in response to questions from Tony about generating cloud
+	specific tarball names in the proxy.
+
+My opinion:
+
+    Bucket information and cloud provider information is configuration to the Cloud proxy. 
+    The TA knows nothing about this, but merely kicks the proxy when data needs 
+    to be moved between the cloud and the local cache.
+
+    I was thinking that the object keys were owned by the TA.  
+    The only issue I see here is that we need lowest common denominator naming 
+    conventions.  Do you see other issues with this?
+
+    Whether on CBFS is spread over multiple physical buckets shouldn't 
+    matter to us (as long as the Proxy knows which bucket to use for which objects).
+
+    If we want to put multiple CBFS in a single bucket, that means 
+    we have to make our object ID's a little longer ... but I think 
+    it is good idea to ensure their uniqueness.
+
+    It would be much better (for migration and recovery) if the 
+    CBFS data stored in the cloud was not cloud provider specific.  
+    Thus far, our thinking has been that the primary data stored in the cloud is:
+
+	CBFS configuration data ... to enable the file system to be cloned or remotely recovered
+	an index of tarballs ... to drive recovery and garbage collection
+	the tarballs ... whose names are formulaic (e.g. <FS,epoch,snapshot>
+
+    The index refers to tarballs by name.  
+    Tiering reads and writes tarballs by name.  
+    Garbage Collection creates new tarballs, deletes old ones, and 
+    updates the index accordingly.  
+    
+    All of these operations depend on the names of these objects.  
+    Some of them might be performed on the client, but GC might be 
+    performed in the cloud.  
+    Cloud-specific transformations of the names of tarballs would 
+    surely create problems, and names over which we had no control 
+    would probably greatly complicate GC.
+
+   The objects are stored in a bucket on some cloud provider.  
+   We could change which cloud provider we use at a minutes notice.  
+   In fact, the data might be replicated on many different clouds.  
+   I don't see how it makes sense to encode the cloud provider and 
+   bucket in the object name.  
+   
+   Rather I have suggested (in the configuration proposal I sent 
+   out last month) that cloud provider and bucket are proxy configuration 
+   information, orthogonal to the CBFS.
+
+
+

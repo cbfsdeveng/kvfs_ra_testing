@@ -1,0 +1,359 @@
+(1) goals and scope 
+
+    key parameters of problem domain:
+	high IOPS Posix applications
+	small files (1-64KB)
+	huge directories (100K-1M files)
+	large numbers of directories (10K-100K)
+    	simplifying assumptions
+		WORM data (perhaps deletion or replacement of entire sub-trees)
+		high (within a single directory) processing locality
+
+    key missing requirements:
+	required petabyte durability for not-yet-persisted data (3-6 nines?)
+	acceptable replication latency for newly written data
+	acceptable latency for first open of a new input file
+
+    what we plan to build (towards)
+	A WORM Posix file system persisted as tarballs in a bucket or files in a flat tree.
+	A fully Posix read/write file system on top of a key/value store.
+	A cache manager that moves tarballs between the persistent store and the KVFS.
+	efficient handling of 10K-100K tarballs per bucket
+	efficient handling of 100K-500K files per tarball
+
+    primary goals for phase 1:
+	mine-sweep the proposed architecture
+    	demonstrate the read processing speed for ingested data
+	demonstrate ingest speed (from persistent store to KVFS)
+	evaluation of available Key/Value stores
+	quantify benefits of local NVRAM (vs disk)
+	formulas for required memory footprint as a function of data
+	be able to speak to impact on (NAS) persistent backing store performance
+
+    probably important features left out of phase 1:
+	will not (in phase 1) implement operations on higher level namespace
+		we will only be timing operations in the KVS
+		eventually we will full Posix the tree above the tarballs
+	will not (in phase 1) implement any cache manager
+		what ever is needed must be manually ingested into KVFS
+		what ever should be flushed must be manually deleted from KVFS
+		but eventually we will LRU and auto-flush
+	will not (in phase 1) implement writes from cache back to persistent store
+		just tar from the KVS and copy tarball to persistent storage
+		and when we do, it will be whole-tarball delete or rewrite
+		we have no plan to support incremental tarball updates
+	will not (in phase 1) prevent conflicting mkdirs at the top level
+		but eventually we will probably need this
+	will not (in phase 1) implement ingestion of tarballs
+		just untar into the KVFS
+		in phase 2 we will auto-fetch new tarballs upon reference
+		eventually we will probably have direct ingestion from tarball into KVS
+	will not (in phase 1) implement a federation layer for persistent stores
+		start out with a mounted Posix file system
+		eventually we will have DLL plugins for S3, Posix, and probably Windows
+	will not (in phase 1) implement a federation layer for key value stores
+		start out with a simple abstraction later, hard coded for a chosen KVS
+		eventually we will settle on an abstraction layer and build DLL plugins
+
+    punted issues (need not be resolved in the prototype design):
+    	no handling of conflicting writes (e.g. directory renames, file locking)
+		the problem domain is WORM data, there are no conflicting writes
+	no support for atomic link-count management (associated w/hard links)
+		perhaps not hard, but not needed in phase 1 prototype
+	the persistent store must be flat
+		perhaps not hard, but we do not yet have such a requirement
+	no support for (high durability) synchronous writes to tarball
+		perhaps not required, and outside of the phase 1 goals
+
+(2) assumptions about the underlying (input) technologies
+
+	KVS provides high performance access to millions of keys.
+
+	KVS supports values up to 100KB, sweet spot is 10KB or less.
+
+	KVS supports atomic put/delete operations.
+
+	KVS supports range searches (enumerating all keys within a range)
+
+	KVS is able to meet durability requirements for not-yet-persisted data.
+
+	Persistent backing store will be chosen to meet the customer's durability 
+	and availability requirements for persisted data.
+
+(3) performance and scalability issues
+
+	The biggest issue is the size of the database.  We can manage that
+	footprint by automatically LRUing the contents of the Key/Value store.
+	While I suggest that we skip this in phase 1, we should eventually
+	try to manage the amount of data we have in the KVS either against
+	a configured quota, or perhaps based on back-pressure feedback from
+	the KVS adaptor.
+
+	We should also try to manage the number of I-nodes we keep tied up.
+	My initial feeling is that we expect files to be used only once,
+	and should release the I-nodes on close.  We can think about making
+	this smarter if experience proves me wrong.
+	
+	Allowing the system to buffer read tarballs is probably a mistake, 
+	because we will only read them once.  Whether the persistent storage
+	is S3 or file, we probably want to do direct (rather than bufferred)
+	reads.
+
+	While our current thinking is a single node KVS (for latency/IOPS
+	reasons), Key/Value stores do distribute pretty well.  This, and 
+	our focus on WORM data, incline me to try for a design that would 
+	work reasonably on a distributed KVS as well.  
+
+
+(4) High level design
+
+	sketch out the KVS schema
+
+	    inodes (taken from Kai Ren's TableFS)
+	    	each file has a 64-bit I-node number, numbers assigned sequentially
+		
+		Kai assigned these numbers globally, within a single KVFS.  
+		But our KVFS is only a cache in front of a larger persistent
+		backing store.  In some scenarios, it is possible to envision
+		multiple writers (creating independent sub-directories) who 
+		do not share a distributed KVFS.  We need a means to:
+		   1.	ensure the uniqueness of the directory names
+		   	and I-node numbers in the larger backing store.
+		   2.	enable writers to start a new Key/Value store
+		   	from scratch and continue allocating non-conflifting
+			I-node numbers.
+
+		I suggest that we allocate a (large) range of I-node numbers 
+		for each top-level tarball/sub-directory, and that the I-node
+		numbers for each file should be auto-increment allocated from
+		the range associated with the sub-directory in which the file
+		was originally created.  The start-of-range and maximum 
+		already-in-use I-node numbers for each tarball can be
+		inferred when the tarball is read in to the KVFS.
+
+	    directory entries (taken from Kai Ren's TableFS)
+	    	each file is described by a directory entry
+		the key is <directory I-node #,hash64(name)>
+		the value is <name>/<I-node #>;<attributes>;<contents>
+		<attributes> = comma-separated list of
+			LEN=  #
+			TYPE= F | D | S 
+			MODE= # (or perhaps standard 9-11 character form)
+			UID=  #
+			GID=  #
+			MT=   #
+			AT=   #
+			CT=   #
+		??? clarity of key=value vs quicker processing of packed binary format ???
+				
+		For reads of a directory within the KVS, we will do range searches
+		for keys beginning with the directory I#.
+
+		We do not propose to initially support hard links, but
+		Kai Ren described a reasonable extension to handle them.
+		He created a new Key/Value for the target I-node and
+		changed the directory entry values into a new file type
+		(hard link) whose value was the referenced I-node number.
+
+	    primary subtrees (directories above or not yet in the KVS)
+
+		Whenever we get a read for a directory that is above and not yet in
+		the KVS, we go to the persistent store to see if it matches a tarball.
+		As soon as somebody tries to read that directory (or open a file within
+		it) we will (eventually) fetch that tarball into the KVFS.
+
+		When we ingest a tarball into the KVFS, we must initialize directory
+			entries (with correct I-node numbers) to describe the path
+			leading to it.
+
+			??? How to correctly set up path leading to the ingested tarball ???
+
+		If persistent store is on a NAS
+			the file system defines the limit of the global name space
+			form the directory I# from the I# of the tarball
+			for reads of a directory above the KVFS we will do NAS directory reads
+				(not supported in 1.0)
+
+			??? How to allocate unique ranges of tarball I-node numbers ??? 
+
+		If persistent store is in an S3-like cloud
+			the bucket defines the limits of the global name space
+			form the directory I# from the object name
+			for reads of a directory above the KVFS we will do bucket lists
+				(not supported in 1.0)
+
+			??? How to allocate unique ranges of tarball I-node numbers ??? 
+		
+	arguments in fuse.conf
+		fsname
+		subtype
+		default_permissions
+		allow_other
+		?kernel_cache
+		?autocache
+		?direct_io ... probably little reason to buffer
+		~large_read
+		hard_remove
+	    	use_ino
+		?readdir_ino
+	    	?nonempty
+	    	?entry_timeout
+		?negative_timeout
+		?attr_timeout
+		?ac_attr_timeout
+		intr, intr_signal ... later
+
+	what to keep in private data
+
+	what to keep in a fileinfo
+		key for the file
+		current value (perhaps unpacked/interpreted)
+
+	sketch out the major FUSE operations (WORK IN PROGRESS)
+		init/destroy
+			for 1.0 use a persistent key/value store
+			in 2.0 we should probably always starte empty and load from backing store
+
+		file context
+			might as well cache the un-packed value for each open file
+
+		open/lookup/access
+			if parent I-node is within the KVS, just do a lookup
+			if parent I-node or entry is not in the KVS, return ENOENT
+
+		create
+			allocate I-node number within range associated with containing tarball
+			initialize the cached value
+			put it back to the key-value store
+			there are no conflicting writers
+
+		read
+			get the value, and extract the requested range
+
+		write
+			update the specified range
+			put back the key/value
+			there are no conflicting writers
+
+		getattr
+			get the value, extract the requested info
+
+		setattr
+			get the value, update specified info
+			put back the key value
+			there are no conflicting writers
+
+		symlink, readlink
+			same as reads and writes
+
+		mkdir
+			same as create ... but we need a range allocation trick for top level subdirs
+
+		rmdir	
+			do a range check to confirm directory is empty
+			then it is the same as a final unlink
+
+		opendir/releasedir
+			same as open/close?
+
+		readdir
+			range searches
+
+		readdirplus
+			readdir + getattr
+			
+		unlink (final)
+			delete the directory entry property
+			(but leave it in cache until the file is closed)
+
+		getxattr/setxattr/listxattr/removexattr
+			punt for now
+
+		statfs ... 
+			for 1.0 have a configured free space
+				try to compute how much we use (with each put/delete)
+			for 2.0 try to have real space monitoring within KVS
+
+		poll ... trivial because we don't support special files
+
+		simple file rename ... trivial if we don't support links
+			write the new directory entry (like create)
+			delete the old directory entry (like unlink)
+			there are no conflicting writers
+
+	sketch out the issues in punted operations
+		reparenting rename ... return an error
+			problem: conflicting rename/creates in new home
+			problem: conflicting rename/delete in old home
+			proposed solution: ordered parent directory locks
+				but this would be needed on every create and delete
+		link/unlink (non-final) ... return an error
+			problem: atomic link count maintenance
+			assume: keep the count in the link-target I-node property
+			proposed solution: inode lock to provide read/modify/write updates
+				but this would be needed on every I-node updating operation
+		interrupt ... do nothing and return success
+			only relevant in operations to back-end store
+				which are not implemented in phase 1
+			we could pass the abort through to the storage back end
+				there would be little harm even if the operation still completed
+				aborting writes is more complex
+				   we might have to delete the object after pending writes completed
+				   but what if this was an overwrite?
+		getlk/setlk/setlkw
+		ioctl (which operations should I support?)
+		fsync/flush
+		fallocate ... do nothing and return success
+		mknod ... return EPERM
+		notify_reply ???
+		bmap ???
+
+(5) test plan
+
+   a) unit test suite
+
+   	a trivial KVS to use for small scale unit testing
+	compiled unit tests: write and read-backs to confirm correctness
+	compiled unit tests: error injection to test basic error handling
+	scripts to verify basic parameter/main-loop fuse processing
+
+   b) directory tree copy and comparison
+
+	tar up multi-user subtrees
+	untar them into the KVFS
+	diff -r the trees (for file comparison)
+	diff recursive directory listings (for attributes)
+	retar them from the KVFS
+	compare the tar balls (modulo tarball creation time)
+
+   c) standard file system validation tests
+
+	pjdfstest ... see how many I can pass
+   	xfstests ... see how many I can pass
+	ltp/testcases/kernel/fs ... see how many I can pass
+
+   d) basic performance tests
+
+   	get a sample sequence tree
+	time to untar it into a kvfs (write speed)
+	time to tar it from a kvfs (read speed)
+
+	run same tests on EXT4, XFS, BTRFS
+
+	for each chosen NAS
+
+	   compare
+		tar from nas to /dev/null
+	     with
+	   	fetch tarball from nas
+		untar into kvfs
+		tar from kvfs to /dev/null
+
+	   compare
+	   	untar from local tarball to nas
+	     with
+	        untar from local tarball to kvfs
+		retar from kvfs to a second local tarball
+		push tarball to nas
+
+	    wave our hands at how this affects NAS loading

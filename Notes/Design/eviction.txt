@@ -1,0 +1,29 @@
+Mark has been wanting LRU eviction to be driven by the log 
+(and hence not really LRUsed, more LRWritten). 
+Since the log is persistent, that LRU state would be persistent 
+across restarts of the filesystem. (I'm less convinced that the 
+log is the best way, but I get the feeling you've already given 
+more thought to what should or shouldn't be evicted than I have).
+
+We're hoping to be able to extract specific parts from tar files without reading the whole file across. LibArchive or LibTar are open source libraries we can start with. Given the offset of a particular file (which we'll be recording as we create tarballs, and keeping in a separate, less encrypted file), it should be straightforward to extract one or a few specific files without pulling across and completely extracting the whole mess.
+
+On Tue, Nov 1, 2016 at 9:22 AM, Tony M <tony@parascale.com> wrote:
+
+    Couple follow up questions/observations:
+    1. If user is importing large amount of existing data to cbfs, the LRU would unlikely be effective.
+    2. Is the LRU list persisted when user shutdowns the host or VM?  Do we flush everything back to the cloud?
+    3. Is the LRU size roughly equal to the local cache/KVS size?
+    4. If user is interesting in 10% of the hot data from the tar, how do we make sure 90% cold data doesn't purge the warm/hot data from the LRU?
+
+    For the future design, should we consider other archiving service other than tar, so we can fetch only data of interest within the object?  S3 does support partial object download.
+
+    Or have a considerably small tar file, so the download latency can be short and the data temperature are more uniform?
+
+There was a brief discussion on pinning (immunity from eviction).  
+Since every I-node has a pointer to its containing directory, 
+a proposed stake-in-the-ground is that pinning could set an 
+attribute in a directory I-node (and recursively in all of its children), 
+and the eviction agent checks that attribute (in the parent directory) 
+as it considers each file for eviction.  This is not needed in the 
+initial prototype ... but it sounds fairly simple and easy to add later.
+

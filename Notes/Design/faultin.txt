@@ -1,0 +1,14 @@
+Even if we don't evict directories, we need to be able to fault them back 
+in when we mount a filesystem at a new server (fail-over, or for mounting a clone).
+
+Do we want to handle the first-mount case separately? 
+That could potentially involve faulting in the whole namespace, 
+so doing it one dir at a time could be slow 
+(unless somehow done very much in parallel).
+
+For this stage of prototype, do we even need to demonstrate 
+directory fault-in? If we don't evict dirs, we don't need to fault them back in.
+
+Index is list of tarballs, with <inode,offset>.
+
+When inode is a dir, the tarball contains dir contents (<name,inode> pairs)

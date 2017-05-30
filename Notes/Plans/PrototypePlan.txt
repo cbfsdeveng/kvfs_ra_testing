@@ -1,0 +1,99 @@
+Opportunity Investigations
+
+	What was the performance with a caching solution,
+	and why was it inadequate/unacceptable?
+		(what kinds of numbers do we have to hit)
+
+	We need sample genomes to know what the data looks like.
+	What is the creation scenario?
+		(how big a write-back cache do we need)
+	What is the appropriate benchmark?
+
+	What are the post-creation use scenarios?
+	How often?
+		(how good is the locality?
+		 how critical are ls, grep?)
+	What are appropriate benchmarks?
+
+	
+Technical Investigations
+
+	KV research (3-6w)
+		What are the available KV candidates?
+		How good are their tool-kits?
+		How tied are they to particular hardware?
+		What has momentum and buzz?
+		Is anybody talking this kind of use?
+		get and play with the likely ones.
+		choose one or two for prototyping
+		
+		[PP should be on-board to do this]
+
+	Tarball design (3-6w)
+		representation (easy)
+		tiering out to 2ndary storage
+		tiering back to 1ary storage
+		remote read optimizations
+		synnergy w/cbfs
+		define scope of prototype effort
+
+		[VP must be on-board to do this]
+
+Prototyping
+
+	KV prototyping (1-2w)
+		performance measurements at scale
+		estimates of required memory
+		estimates of required h/w cost
+	
+	FUSE prototyping (2-4w)
+		goal: mine-sweep the design
+		goal: a platform for preliminary performance measurement
+		include functional validation suite
+
+	FUSE + KV performance (2-4w)
+		include performance suite(s)
+		
+	flush to tarball (2-4w)
+		goal: minesweep the design
+		goal: performance vs direct write to back-end
+
+	load from tarball (4-8w)
+		goal: minesweep the design
+		goal: performance of ls and grep
+
+	??? is there any reason to prototype direct posix back-end ???
+		No:	It is not a high performance plan
+			It is primarily a transparency save
+			The technical risk is very low
+
+Planning:
+	
+	functionality/performance demo platform	(2-4w)
+
+	product proposal (1-2w)
+		general product description
+		achievable create performance
+		achievable reuse performance
+		per station hardware cost
+		proposed revenue model
+	
+	development proposal (2-4w)
+		proposed h/w
+		proposed kvs
+		proposed s/w architecture
+		proposed s/w development plan
+
+Crude Schedule Estimation:
+	Investigation	 6-12sw
+	Prototyping	11-22sw
+	Planning	 5-10sw
+			------
+			22-44sw
+
+	staffing	time	date (start 10/1/14)
+	--------	----	----
+	1 x .5		44-88w	2/16 ... way too long
+	2 x .5		22-44w	6/15
+	3 x .5		17-33w	4/15 ... this should be our goal
+	4 x .5		11-22w	2/15 ... probably unrealistic

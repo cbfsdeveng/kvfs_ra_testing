@@ -1,0 +1,173 @@
+In Fall 2016, we decided it was time to replace running tar with real
+tiering out and tarball generation, allowing us to address encryption,
+compression, and real index generation.  Mark and Joe had several 
+discussions about how to restructure the (at that time) relatively
+mono-lithic tiering-out-agent.
+
+==== 07/26/16 - initial thoughts on relationship of TA to PQFS
+After a little thought, my idea of letting the TA be a direct KVS client 
+doesn't make much sense.
+
+The KVS is likely implemented by a library in the PQFS client's address space, 
+and so must (in most cases) be accessed by that process.  
+If a TA in an independent process has to use the PQFS, it seems it must be 
+through RPC-like requests.  
+It cannot, in general, be an independent client of the same KVS.
+
+So perhaps the relationship between the PQFS and the TA is an RPC relationship?
+
+	a PQFS advertises a port
+	a TA binds to the PQFS
+	each can make RPC calls to the other
+	the TA to read and write files by I#
+	the TA to manage snapshots (or however we serialize objects in transit)
+	the PQFS to request the recovery of tiered-out information
+	the PQFS to notify the TA of the publication of a new log segment 
+		(this one seems more an event than an RPC operation)
+
+If it is an RPC relationship, there is probably no reason to expose the 
+KVS schema to the TA.  The TA probably needs only open/create by I# operations 
+and read/write getattr/setattr.
+
+We should schedule a face-to-face soon to talk about this, logs, and 
+version/snapshot management for objects in transit.
+
+==== 11/03/16 - review of current code and discussion of plan
+
+    major changes to segment and refactoring some code out of tiering_out_agent ... 
+    but the external interfaces should remain (modulo extracting some new classes) 
+    largely unchanged.  
+    
+    primary interfaces between TA and CBFS are mounted instance and log service, 
+    and these interfaces could likely be preserved whether or not TA ran in same 
+    processes as the CBFS.  These two interfaces are probably relatively easy to fake, 
+    if we want to build free-standing test drivers for tiering (both in and out).
+
+    the taking of a snapshot and publication of a new log installment should be 
+    atomic and consistent, so that the log describes the snapshot.  The word 
+    snapshot is over-loaded and needs to be disambiguated.  The distinct
+    concepts seem to be:
+	    KVS snapshot ... what the KVS does
+	    persisted snapshot ... updated tarballs and index in the local cache
+	    snapshot to the cloud ... push those to the cloud provider
+
+    The current log is in memory.  At the point a snapshot is taken, the in-memory 
+    log should be peristed to a file (for processing by the TA).  
+    
+    We believe that moot operation compression is purely to avoid putting dead 
+    stuff in the tarballs, and that we should not replace the persistent log 
+    with the compressed version ... the history of what was deleted when being important.
+
+    We believe that (at least for the prototype) we can store tarball offsets in the index, 
+    and do not need to maintain a separate inode-chunk-offset list in each tarball.  
+    This only doubles the size of the index, and is unlikely to become a size/performance 
+    issue until we start doing sparse writes (tarballs contain small random updates) ... 
+    which is certainly not an issue any time soon.
+
+    we would like (from an emergency perspective) to be able to regenerate the index 
+    from scanning the tarballs.  This means that the tarballs must contain some sort of 
+    deleted file tomb-stones.  When we figure out how to do this, we should also see if 
+    we can find a way to encode meta-data-only updates.
+
+==== 12/16/16 - more detailed discussions about code refactoring
+
+My initial thoughts were to separate orchestration from policy and mechanisms
+
+    clearly generic stuff that stays in TieringOutAgent
+        thread control: RequestStop, Join, Wait, RunInternal
+
+    high level snapshot functionality that stays in TieringOutAgent
+        assemble a list of I-nodes to be written out, and pass it to 
+	a snap-shot module.  
+	
+	I note that you suggested that GetInodes might want to move into 
+	its own class.  Does it belong in the log class (since it extracts 
+	information from a set of log entries)?
+
+    Everything involved in turning a list of I-nodes into tarballs should be in a separate module:
+        segment creation
+
+    How to partition eviction functionality is surely quite different from tarball creation ...
+        highly log driven (vs tarballs, which just want a list of I-nodes)
+        mostly policy (vs tarballs, which are mostly mechanism)
+        the code to actually perform an eviction (once you have decided what to evict) 
+	is (I suspect) quite trivial (delete some keys, and maybe create a detour)
+
+The interface between the TOA and snapshot-persister might be:
+
+    input
+        a vector of file updates: initially just I-node numbers, but eventually it might 
+		include meta-data-only or sparse data write notations as well.
+        a FileSystemManager for the mounted snapshot
+        an index manager
+    output
+        success/failure indication
+        updated flush status (current state, how far we've gotten)
+        tarballs in the proxy
+        index updated to reflect them
+
+It seems to me that the index and tarballs are joined at the hip, so it makes sense to 
+have the snapshot-persister drive the index updates directly, rather than having the 
+TOA pass the list of updates from the persister to the index manager.
+
+Note that there are no log entries in either the input or output.  The log might only 
+be for communication between the KVFS and the TOA.
+
+Given that we are assembling a snapshot rather than a set of transactions, 
+I don't think that moot operation compression is a meaningful operation.  
+We assemble a list of files to be written out, we get their current state/contents, 
+and we write them out.  A file might have been updated 100 times, but we only 
+write out its final state.
+
+Given that we don't want to take snapshot N+1 until N is (at least) in local 
+tarballs, we might want to make the call to the snapshot module a synchronous 
+one, so the mainloop does not continue until we finish the previous operation.  
+
+Re: management
+
+    Since this is happening under the aegis of the TOA, do I correctly assume 
+    that I should report progress back to the TOA, who will expose it to the 
+    web management interface as appropriate?  
+    
+    Should I return you this status through some class-instance variables, 
+    or through some status update APIs?
+
+    Should DumpKVStore and DBstats also be moved into the web management module, 
+    or are those properly operations within the TOA?
+
+==== 02/16/17 - a follow-up on detailed code refacotoring plans
+
+We discussed the (confusing to mark) relationship between Segment and proto::Segment.  
+The bottom line seems to be that I shouldn't have to know about proto::Segments.  
+The test_main code that used proto:: objects was low level exercise code, 
+not representative of how any real code should be written.
+
+We discussed the problem of batch-eviction, and what to do if we reclaimed 
+enough space before we finished the batch.  We both agree that (to make 
+resumption of log processing work) we have to do the eviction processing on 
+all of the I-nodes in a batch.  
+For now, a batch can be a snapshot, and we can refine that later.
+
+We discussed the relationship of the TA, persister, and evicter, and decided that:
+
+    the TA decides what operations should be persisted (i.e. what is the 
+    content of this snapshot), and tells the persister to do it.  
+    He doesn't know or care how it is done ... but he does need to know 
+    when it is complete.
+
+    the TA decides when we need to free up space in the KVS, and chooses 
+    a range of XIDs (that have been safely persisted) and tells the evicter 
+    to process them.   He doesn't know or care which ones the evicter 
+    decides to evict or how it made that decision.
+
+    eventually the persist and evict operations are likely to be asynchronous, 
+    but for now they are synchronous.  The implementations and status model 
+    should not greatly care.
+
+    there is a persistent status object associated with each snapshot, that 
+    we will probably implement as a log file (of every interesting event in 
+    the history of that snapshot).  
+    
+    there is a class to write new entries, and a class to parse a file to 
+    figure out the current status of a snapshot.
+

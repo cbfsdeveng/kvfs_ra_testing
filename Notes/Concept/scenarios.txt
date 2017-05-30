@@ -1,0 +1,117 @@
+Early thoughts on what we might want to build ... now surely quite stale.
+
+Storage in S3:
+
+	All data is stored in an S3 bucket.
+	The object names are the names of the top level directories.
+	Each S3 object contains a tar-ball for one directory full of files.
+	One bucket full of objects represents a complete file system name space.
+
+	Data in the object store is pseudo-WORM.  An object can be deleted or replaced.
+
+Storage on a NAS:
+
+	As in S3, but the tarballs are files in a directory hierarchy.
+	It is simpler if that hierarchy is flat (like an S3 bucket), but
+	this may not be necessary.
+
+Converting data from NAS to cloud:
+
+	Point conversion utility at a tree full of data directories, and
+	an S3 server/bucket.  
+	
+	It will discover the directories that contain sequenced data, and tar 
+	each of those directories into a single tarball, which it will then write 
+	to the bucket (with the object name equal to the last component of the 
+	directory name).
+
+	If the directory tree on the NAS is not flat, we have to decide whether
+	to flatten it, or to include the intermediate sub-directories in the
+	object names.  We can start out by punting on this.
+
+Converting data in-place on NAS:
+
+	Point conversion utility at a tree full of data directories.
+
+	It will discover the directories that contain sequenced data, and tar 
+	each of those directories into a single tarball, which it will store
+	along side the corresponding directories (with the name <dirname>.tar).
+	It can, if requested, delete each directory after the creation of each
+	tarball.
+
+Local Key/Value file system:
+
+	This is a (relatively*) full Posix file system implemented in a local 
+	(or distributed) key value store.  It will be used to cache data to 
+	be processed locally.
+	
+	Even though this is a read/write file system, the data that will be stored 
+	in it is WORM.  This means we don't have to worry about consistency between 
+	copies in different client nodes.  
+
+	*Because the data is WORM, we will initially cheat on rename and locking.
+
+Local Read/Only Tarball file system:
+
+	The target file system is described by a <server,bucket>, or a directory
+	(that is probably mounted from some NAS).
+
+	A list of the root directory is turned into a list of the bucket (or
+	top level directory on the NAS).
+
+	When a file/directory below the top level directory (that is not yet
+	in cache) is referenced the containing tarball will be fetched and 
+	un-tar'ed into a local key value file system.  If no such tarball
+	can be found we will return ENOENT.  Once the tarball has been 
+	fetched and un-packed, all subsequent operations that directory and
+	files beneath it will be passed through to the Key/Value file system.
+
+	Once we move past the initial prototype, we will keep track of the
+	last referenced time for each fetched directory.  If the Key/Value
+	store gets low on space, we will delete the least recently referenced
+	directory.
+
+	This should perform extremely well for applications that do considerable
+	operations within a sub-tree.  But it would perform very badly for 
+	applications that only operate on a few files in each of many 
+	sub-trees.
+
+	An interesting question (which we might not need to initially solve)
+	is how we might want to deal with situations where the initial tree
+	(above the sequence-data-containing-directories) was not flat?
+
+Writable Tarball file system:
+
+	The target file system would again be described by a <server,bucket>, 
+	or a directory (that is probably mounted from some NAS).
+
+	We could detect changes within each sub-tree and (when it was time
+	to swap it out), create a new tarball and up-load it to the mounted
+	cloud or NAS.  Once this was complete, we could safely evict that
+	sub-tree from the local Key/Value file system.
+
+Initial Prototype:
+
+	For initial performance assessments, there is no need to implement
+	the automatic fetching and flushing of tarballs between the remote
+	cloud/NAS and the local key/value file system.  
+	
+	For write testing, we can:
+		manually tar the new sub-tree
+		upload the new tar-ball to the cloud/NAS
+		delete that sub-tree from the key/value file system
+
+		This is acceptable because write speed is not (in the
+		short term) viewed as a critical problem.
+
+	For read testing we can:
+		manually fetch the tarball from the cloud/NAS
+		untar the tarball into the Key/Value file system
+		delete it when we are through processing it
+
+		This is acceptable because we will initially focus
+		on the processing speed for the data in the Key/Value
+		store.  If the testing moves forward, we will probably
+		want to write code to directly ingest a tarball into
+		the Key/Value file system without a fork, an exec,
+		and going through the FUSE.

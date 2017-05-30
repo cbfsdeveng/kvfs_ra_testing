@@ -1,0 +1,135 @@
+<BS>Sweet!  And it looks like anything not intercepted passes through.
+
+The remaining problems (that come to my mind) are:
+
+    1. how to recognize and peel off opens/creates that fall within a PQFS
+
+    I am not sure that path names work, because opens don't have to be fully qualified.
+    Maybe we can start by passing the opens/creates through.  If it comes back with an ENOENT, we can then try to process it again as a PQFS operation (doing our own recursive path name evaluation until we get to the mount point).
+
+    2. how to recognize and peel off operations on a PQFS file descriptor
+
+    I'm thinking we just keep a bit-map of FD's, peel off the ones that hit, and pass through the ones that hit.
+
+    3. how to pass through operations to non PQFS file descriptors
+
+    The problem is that we have over-loaded the symbol.  Is there a trick to pass this farther down the dynamic loader binding chain?
+
+
+
+If we had a single, performance-critical, client (e.g. because we were
+inside of a sequencing engine) we could get much better performance by
+pulling cbfs into the application, via interception of libc system calls.
+
+
+On 09/04/15 08:44, Prasanna Ponnada wrote:
+>
+>
+> On Sep 4, 2015 8:37 PM, "Mark Kampe" <mark@parascale.com> wrote:
+> >
+> > I think this is a good plan B:
+> >>
+> >> provide a library people can link with that will pull off opens in a PQFS and send those operations (and subsequent system calls on the same file descriptors) directly into an (in process) PQFS owner.
+> >>
+> > But most people don't have object modules for most of the s/w they run.  What I was hoping to find was a DLL interposition mechanism:
+> >>
+> >> provide an alternative libc DLL that does the intercept, and then passes operations through to the normal DLL. 
+>
+> www.catonmat.net/blog/simple-ld-preload-tutorial/ perhaps this might help?
+>
+> This might enable us to bind a (single client) PQFS owner into an arbitrary application.
+> >
+> > A friend at Sun did this long ago, a part of an ABI compliance validation suite.  I was hoping that the methodology had been improved in the last 15 years, and that we could find an implementation we could start with.  But my first 20 minutes of google searches didn't turn up anything.
+> >
+> >>
+> >
+> > On 09/04/15 05:49, Prasanna Ponnada wrote:
+> >>
+> >> Basic idea: wrap the system call with __wrap_fn-name and specify the wrapped system call at link time.
+> >>
+> >> Sample code:
+> >> ---------------------
+> >>
+> >> ponnada@ubuntu-vb:~$ cat test-write.c
+> >> #include <stdio.h>
+> >>
+> >> int main() {
+> >>  write(0, "hello, world\n", 12);
+> >>  return 0;
+> >> }
+> >> ponnada@ubuntu-vb:~$ gcc -c test-write.c -o test-write.o
+> >>
+> >> ponnada@ubuntu-vb:~$ cat write.c
+> >> #include <stdio.h>
+> >> #include <dlfcn.h>
+> >>
+> >> void pqfs_write(int fd, const void* buf, ssize_t count) {
+> >>     printf("pqfs_write() doesn't do much at this time\n");
+> >> }
+> >>
+> >> ssize_t __wrap_write(int fd, const void* buf, ssize_t count) {
+> >>     printf("Inside wrapped write. Received %s", (char *)buf);
+> >>     printf("Now calling custom write\n");
+> >>     pqfs_write(fd, buf, count);
+> >>     return 0;
+> >> }
+> >>
+> >> ponnada@ubuntu-vb:~$ gcc -c write.c -o write.o
+> >> ponnada@ubuntu-vb:~$ gcc -Wl,-wrap,write -Wl,-wrap=write write.o test-write.o -o test-write
+> >>
+> >> ponnada@ubuntu-vb:~$ ./test-write
+> >> Inside wrapped write. Received hello, world
+> >> Now calling custom write
+> >> pqfs_write() doesn't do much at this time
+> >> ponnada@ubuntu-vb:~$
+> >
+
+I tried the strong symbol trick, and it mostly worked.
+
+I used the attached program and ran
+LD_PRELOAD=./intercept.so cat intercept.c
+
+It caught the reads, and passed them through ... but for some reason it did not catch the open.  Perhaps cat is using a different flavor of open?  Anyway, at least for Linux/glibc, the  __ symbols do seem to work for call pass through.
+
+I looked at the glibc sources, and they seem to use similar coding conventions for
+all system calls.  The primary entrypoints are actually defined as
+
+        __libc_entrypoint
+
+    and then add the additional symbols
+
+        libc_hidden_def (__libc_entrypoint)
+        weak_alias(__libc_entrypoint, __entrypoint)
+        libc_hidden_weak( __entrypoint)
+        weak_alias(__libc_entrypoint, entrypoint)
+
+
+
+
+interpose.c
+
+#include <stdio.h>
+
+extern int __open(const char *, int, int);
+extern int __read(int, char *, int);
+extern int __write(int, char *, int);
+
+int open(const char *path, int flags, int modes) {
+	fprintf(stderr, ">intercepted open of %s\n", path);
+	return(__open(path, flags, modes));
+}
+
+int read(int fd, char *buf, int count) {
+	if (fd > 2) {
+		fprintf(stderr, ">intercepted read for fd%d, %d bytes\n", fd, count);
+	}
+	return(__read(fd, buf, count));
+}
+
+int write(int fd, char *buf, int count) {
+	if (fd > 2) {
+		fprintf(stderr, ">intercepted write for fd%d, %d bytes\n", fd, count);
+	}
+	return(__write(fd, buf, count));
+}
+

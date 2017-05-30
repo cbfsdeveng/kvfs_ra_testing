@@ -1,0 +1,293 @@
+summary of 2/16/17 discussion w/JK&MK) 
+
+We discussed the problem of batch-eviction, and what to do if we reclaimed enough space before we finished the batch. We both agree that (to make resumption of log processing work) we have to do the eviction processing on all of the I-nodes in a batch. For now, a batch can be a snapshot, and we can refine that later.
+
+We discussed the relationship of the TA, persister, and evicter, and decided that:
+
+    the TA decides what operations should be persisted (i.e. what is the 
+    content of this snapshot), and tells the persister to do it.  
+    He doesn't know or care how it is done ... but he does need to know 
+    when it is complete.
+
+    the TA decides when we need to free up space in the KVS, and chooses 
+    a range of XIDs (that have been safely persisted) and tells the evicter 
+    to process them.   He doesn't know or care which ones the evicter 
+    decides to evict or how it made that decision.
+
+    eventually the persist and evict operations are likely to be asynchronous, 
+    but for now they are synchronous.  The implementations and status model 
+    should not greatly care.
+
+    there is a persistent status object associated with each snapshot, that 
+    we will probably implement as a log file (of every interesting event in 
+    the history of that snapshot).  
+    
+    there is a class to write new entries, and a class to parse a file to 
+    figure out the current status of a snapshot.
+
+
+The persister constructor takes as parameters
+
+	a mounted kvfs (snapshot)
+	a log manager (for getting information about recent updates)
+	an index manager (for recording information about archived files)
+	a proxy manager (for creating and pushing objects)
+	Persister.snapshot(minXid,maxXid)
+
+    uses the log manager to get information about the selected updates
+    reads the kvfs snapshot to get data and metadata
+    uses the proxy manager to create a tarball
+    uses the index manager to create an index entry describing the tarball
+    unmounts the snapshot when it is done
+    instantiates, initializes and returns a status object for the snapshot
+
+(notes from 12/16/16 discussion w/Mark & Joe)
+
+I think the word snapshot is over-loaded and needs to be disambiguated. I am open to other words, but I was thinking something like:
+
+	KVS snapshot ... what the KVS does
+	persisted snapshot ... updated tarballs and index in the local cache
+	snapshot to the cloud ... push those to the cloud provider
+
+My initial thoughts were to separate orchestration from policy and mechanisms
+
+	It seems to me that the index and tarballs are joined at the hip, 
+	so it makes sense to have the snapshot-persister drive the index 
+	updates directly, rather than having the TOA pass the list of updates 
+	from the persister to the index manager.
+
+	Note that there are no log entries in either the input or output. 
+	The log might only be for communication between the KVFS and the TOA.
+
+	Given that we are assembling a snapshot rather than a set of transactions, 
+	I don't think that compression is a meaningful operation. We assemble a 
+	list of files to be written out, we get their current state/contents, 
+	and we write them out. A file might have been updated 100 times, but we 
+	only write out its final state.
+
+	Given that we don't want to take snapshot N+1 until N is (at least) in 
+	local tarballs, we might want to make the call to the snapshot module a 
+	synchronous one, so the mainloop does not continue until we finish the previous operation.
+
+Re: management
+
+	Since this is happening under the aegis of the TOA, do I correctly assume that 
+	I should report progress back to the TOA, who will expose it to the web management 
+	interface as appropriate?  Should I return you this status through some class-instance 
+	variables, or through some status update APIs?
+
+	Should DumpKVStore and DBstats also be moved into the web management module, or 
+	are those properly operations within the TOA.
+
+(based on 12/29/15 meeting w/JH&MK)
+
+Scope of Prototyping Effort
+
+	We will support tiering out to a local proxy, and from there to S3 
+	(by a really cheap agent).
+
+	Our index design will support the ability to fault directories and 
+	files back (including secondary read-only copies and mountable 
+	snapshots) but none of this will be implemented in the prototype.
+
+	Our log publication mechanism will not be reliable (in that a crash 
+	will lose unpublished log entries) but the base and extend object 
+	formats will include enough self-identification information to make 
+	it possible to recreate lost log entries from a KVS log.
+
+	The initial design will assume that all of directory and all of the 
+	file updates in it will fit in a single tarball. We will figure out 
+	how to spread directories and files across tarballs if we move 
+	forward with a real product.
+
+The Tiering Agent (TA) operates largely independently from the PQFS Owner (FSO):
+
+	The FSO creates and publishes update logs which are processed by the TA.
+	The TA does need to reference base and extent objects to create the tarballs.
+	The TA creates tarball objects (TBs) and updated versions of the Index.
+
+	When the TA wants to evict an object from the KVS, there is probably some 
+	locking or handshake with the FSO to deal with the possibility that the 
+	object is being updated at the same time it is being evicted.
+	
+	The mapping from I# (as of some time) to tarball is accomplished entirely 
+	with the index (or indices). We do not store Tarball URLs in the KVS. 
+	If the FSO needs an object that is no longer in the KVS, it sends a 
+	message to the TA, asking for the specified I#. 
+	
+	Beyond that, the FSO has no idea how the TA works or where it gets the data. 
+	This eliminates any need for coordination between Garbage Collection and 
+	the FSO. 
+	
+	Obviously reading through the entire index to find a particular 
+	object could be expensive, but this can be dealt with by caching index 
+	information in the TA.
+
+Index structure:
+
+	Initially, there will be a single index (which will also be a 
+	single S3 object), which describes all of the (currently valid) 
+	TBs. Later we may decide that cloud I/O can be reduced by having 
+	a smaller master index that points to a collection of less mutable 
+	sub-index objects ... but that is an optimization we can consider later.
+
+	The master index will be a list of TBs, and a list of the I-nodes 
+	that are updated in each.
+	Each Tarball will begin with a ToC file, listing the contained I-node #s 
+	and the offset/length of each within the tarball. The local S3 proxy will 
+	keep these ToC files locally cached even if the TBs have been deleted from 
+	the local cache.
+
+	We believe that the BSD Tar format permits us to associate data (a directory block) 
+	with each directory in a TBs. We will store a list of <name, i#> entries in here, 
+	and this will enable us to efficiently fault directories back in.
+
+Log Files and Tiering:
+
+	for the prototype, it probably makes sense to accumulate log file updates 
+	into reasonably large (4K-1M) updates, which are appended to the currently 
+	open log file. 
+	
+	When a snapshot is declared (or we decide it is time to kick off tiering) 
+	the FSO closes the log file, kicks the TA, and starts a new log file.
+
+	It probably makes sense to name log files by the lowest and highest XIDs 
+	they contain.  If multiple consecutive log files are flattened, the result 
+	is a new log file based on the lowest and highest XIDs that were processed. 
+	This is done make-before-break, so there should always be a complete set of 
+	log files from the beginning of time to the latest publication.
+
+	A single tarball object contains updates associated with a contiguous set 
+	of XIDs. This makes it possible to maintain transactional integrity when 
+	restoring them.
+
+	By consulting the last published Index a new TA can learn the XID of the 
+	last operation persisted to a TB. It should begin tiering out from #+1, 
+	updating the index as each new TB is created. Thus a new TA can easily 
+	pick up where its predecessor left off. Any in-progress TBs not yet 
+	listed in the index should be assumed to have been corrupted during construction, and deleted.
+
+	The eviction process is also based on an (occasionally persisted) XID. 
+	But this is an attribute of the local TA and irrelevant to the in-cloud 
+	data or any slave instances.
+	
+	look at the I-node for the next XID. If the XID in the I-node is newer 
+	than the current XID, ignore this entry. We will encounter another one later.
+	if we are looking at the last update to this I-node, look at the access 
+	time and KVS free space to decide whether or not to evict this object. 
+	
+	If we decide not to evict it, use a PQFS ioctl to log a 
+	"spared Inode x as of XID y" message ... so that we can consider evicting 
+	this chunk/directory again in the future.
+
+	when we fault something back in, we also put a "spared" entry in the log 
+	so that we can consider evicting the data again later.
+
+	we cannot evict anything that is not yet listed (in the index) as having 
+	been persisted. Whether we require this to be in cloud or merely in the 
+	local proxy is a mount option.
+
+	once eviction processing has been completed on a log file, that log ceases 
+	to be interesting to the TA (or any other part of the PQFS implementation). 
+	We can choose to:
+		push it to the cloud and keep it forever
+		push it to the cloud but periodically compress out moot transactions
+		delete it after a reasonable retention period
+
+Log files, TBs and Garbage Collection
+
+	TBs are semi-immutable. GC can move objects to a new TB ... but as long as the 
+	index reflects the new location, this should not be a problem.
+	This enables significant independence between the TA and GC.
+
+	In principle the garbage collector could unilaterally:
+		audit a set of logs to identify operations to be compressed out
+		produce a new set of (fewer/flatter) TBs
+		produce a new index listing the newer TBs
+		delete the old TBs
+
+	If any client attempted to fetch an old TBs (because it was still 
+	using a stale index) it could get an error, re-read the index, 
+	discover its error, and move on to the new index.
+
+	The TA and GC would never conflict on any TBs updates, because the 
+	TA only creates new TBs, and the GC can only operate on old ones.
+	The only possible update conflict would be for the index (the TA wants 
+	to add a new entry, and the GC wants to update old entries). 
+	We do have to figure out how to manage this problem ... perhaps 
+	by having the GC agent submit his index updates back through the owning TA?
+
+	GC can delete intermediate versions of objects that are flattened out of 
+	existence (e.g. a file was created in June and deleted in July ceases to 
+	exist when monthly snapshots are compressed into annual snapshots). 
+	As long as GC is done according to a retention policy, this should not be 
+	a major problem. There might be a corner case where someone mounted an old 
+	snapshot and started reading a large file, which got flattened out of 
+	existence before the TB could be pulled to the local proxy.  This error is 
+	within retention policy, so I suggest that we simply return an EIO in this case.
+
+==== OLDER DISCUSSIONS 
+The current model is that we write the tarballs from a PQFS snapshot,
+which solves a lot of problems.  This is a little of the thought
+that led us there.
+
+Yesterday we had a very superficial discussion about tiering and file
+locking.  I have thought about it a little more.
+
+I think the problem is confused by two related but not identical operations:
+
+  * backing up data to the cloud for protection or to enable space
+    reclamation.
+  * creating a point-in-time snapshot
+
+The second clearly needs to be point-in-time consistent.  For the first,
+we can argue about whether or not the cloud backup needs to be
+point-in-time consistent (e.g. some of the backed-up-contents are newer
+than most of the others).
+
+Clearly we could implement tiering with point-in-time snapshots. The
+question is whether or not we could achieve significant savings with
+something less than that.  To explore that, I'd like to propose a weaker
+mechanism ... and then we can see if it is worth the  trouble.
+
+The baseline proposal:
+
+  * when a snapshot is declared we version-lock the entire file system
+    (making all files copy-on-write) and flush out any pending change
+    log updates.
+  * when the tiering agent finishes creating his tarballs, he tells the
+    file system to release the version lock on that snapshot.
+  * releasing the version lock has the side effect of discarding all
+    down-version changes.
+
+A weaker proposal:
+
+  * the tiering agent processes a bunch of logs and decides what he
+    wants to write out.
+  * the tiering agent version-locks every file whose data he intends to
+    tier out.
+  * the tiering agent creates his tar-balls (which may contain both data
+    and metadata changes made after the log but before the version locking.
+  * the tiering agent unlocks all of the version-locked files.
+
+What did this weaker mechanism buy us?
+
+  * fewer files were version locked for a shorter period of time,
+    reducing the number of versioned changes and the amount of space
+    tied up by transient versions.
+
+What did it cost us?
+
+  * the overhead of locking and unlocking individual files could easily
+    be greater than the savings from fewer files being affected by the
+    version locking.
+  * files that changed between the initial logging and the version
+    locking are likely to be written out twice (when we encounter the
+    update log entries).
+  * anything less than a total recovery is likely to produce a
+    time-inconsistent result.
+
+My conclusion from this superficial analysis is that tiering should be
+done with snapshots, and that a finer grained synchronization between
+the file system and tiering agent is not worth the trouble.
+

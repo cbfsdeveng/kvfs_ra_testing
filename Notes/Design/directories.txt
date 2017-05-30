@@ -1,0 +1,84 @@
+A very old (and stale) note on directories
+
+TableFS used a key per directory entry.  The name of the key was 
+formed from the I-node number of the parent directory and a hash of 
+the file name.  The associated value included the full file name, 
+its I-node number, and protection/ownership information.  
+This schema enabled directories to be enumerated by a ranged search 
+for all keys beginning with the parent directory’s I-node number.
+
+There seem to be a few major issues with implementing directories 
+on top of a key-value store that does not support range queries:
+	We need to store the list of files that are included in 
+	the directory somewhere so that we can enumerate the contents 
+	of the directory.
+
+	We need to keep that list up-to-date with link creations 
+	and deletions, and manage the cost of those updates as 
+	the directory grows.  In particular, we would like not 
+	to have to complete read or re-write the directory list very often.
+
+I think we could use a similar (I#,hash of name) schema to represent 
+directory entries, but we would still need to create object(s) 
+to contain the list of included files. 
+	lookup is just a key lookup of the desired <i#,name hash>
+	link creation would
+		lookup to see if it already existed
+		if not, append a new entry to the end of the parent directory
+		update the per-entry key to reflect the new information
+	link deletion would
+		lookup to confirm that it existed
+			assume that we also store the <segment,offset> 
+			of this directory entry in the per-entry property.
+		remove the entry (from a known <segment,offset>
+		delete the per-entry key
+	directory listing would
+		read the directory containing object(s) … probably 
+			implemented exactly the same way as file contents
+		get a list of names and I-node numbers
+		after which the per-entry properties could 
+			contain the required information
+
+This would require one key-value operation per lookup and four per 
+create or delete.  This might be a reasonable price to pay for 
+keeping the implementation above RAMCloud.  There are, however, 
+a few additional issues to be resolved:
+
+    how to keep track of the free entries in each directory without a lot of I/O
+	Perhaps we could keep a count of the number of empty entries 
+	in each chunk of the directory, and go back to insert if there 
+	was a lot of free space behind us?  
+	Perhaps most of this information would only exist in memory 
+	and have to be reestablished the first time a directory was updated?
+
+    what to use for persistent handles
+	<parent I#,name hash> would almost work, but does not survive moves
+	if we want a handle that survives moves, we probably have to 
+	use I#, but this would then require us to have two keys per 
+	file (one for the entry and one for the I-node).  
+	TableFS used <parent,hash> until a second link was created, 
+	after which they moved the file metadata into an I-node number 
+	based key, and turned the <parent,hash> into a symlink to the 
+	I-node number.  This might be a very good compromise … fast in 
+	the common case, but general when links and renames are happening.
+
+    how to handle hard links
+	If we separate per I# and per entry keys, this is trivial.  
+	If we only keep a per entry key, we could certainly create 
+	some sort of symbolic link back to the first link … but 
+	keeping these up to date with future moves and renames could 
+	be difficult (hard to find them to fix them).  
+	The TableFS trick of moving from a <parent,namehash> 
+	to an <i#> key after the creation of the second link seems 
+	a good way to deal with this problem.
+
+    how does this Tier out to secondary storage
+	We do not need to keep the I-node entries for all 
+	files in the in-memory table.  If we keep the I-node 
+	entry for every directory in the in-memory table, we 
+	can pull back its contents, and then re-add the entries 
+	for every file in that directory to the in-memory table.   
+	If we didn’t want to pre-fetch the entire directory, 
+	we could fault entries in progressively (as they were needed) … 
+	but this seems like a lot of trouble for something that 
+	might have very bad performance.

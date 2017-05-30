@@ -1,0 +1,36 @@
+In 2014 Mark and CB talked to a few people in the sequencing business and
+got this background on their storage needs:
+
+The problem
+	roughly 20-30K files (a few K each) per directory
+	operations/second challenge the NAS
+	large directories challenge the NAS
+
+What they've tried
+	ZFS over Fiber Chanel
+		the dcache couldn't handle the directory size
+	Isilon partnered w/Illumina
+		but they couldn't handle the small file OPS
+
+Generation
+	the intensity file is a .tif
+	it is processed into a col file, which is saved and everyone uses
+	generation throughput is not as critical problem as processing throughput
+
+Processing
+	traditional model (>50%) operates on a few directories of 20-30K files
+	new model (~25-35%) operates on 10-20 directories of 100K files
+	some processing goes all over the disk
+
+	but even if we only helped the traditional processing model, that would be a lot.
+
+Other characteristics of data
+
+	It is truly write-once
+
+	But the data is probably not forever.  Improving technology suggests that
+	a sequence that is more than 1-2 years old can probably be improved by a
+	new sequencing, which will be much less expensive.
+
+	Archiving large directories with bazillions of small files is also a pain
+	in the but, and people would love to have these turned into tarballs.

@@ -1,0 +1,80 @@
+Mark's comments on Joe's and OXB's comments on locking
+
+Locking: Since this is just a prototype for initial evaluation:
+
+  * I suggest that we start out doing whole-I-node locking ... as it is
+    simple, easy to get right, and won't be a problem until we start
+    seeing significant multi-threaded access.
+  * Once OXB gives us a basic FUSE, and Joe and I add the remaining
+    operations, we can start doing multi-client throughput tests and see
+    where the contention bottlenecks are.  It is possible that the FUSE
+    will more constrain our parallelism than our own locking.
+  * When we (as we eventually will) start encountering contention, we
+    can then look at:
+      o reader writer locks on base objects, and perhaps directory
+        partitioning
+      o doing most of our updates under the protection of
+        chunk/partition locks
+      o spinlocks make sense for protecting in-memory hash chains, but I
+        suspect that we will be protecting KVS get/put operations among
+        worker threads ... so I am guessing that we will probably want
+        to use ordinary thread mutexes.
+  * Where do the locks live?  I see two obvious choices:
+      o if we retain in-memory versions of KVS objects (some form of
+        logfsobj) we can put the locks in there ... and these objects
+        are an object cache.
+      o if we do not keep our own in-memory data structures, we can
+        maintain a hash-chain of locks for in-use objects accessed by
+        the associated key.
+  
+Caching:
+
+  * Joe too has suggested that LevelDB/RoxDB is probably doing a good
+    enough job of local caching that there is no reason for us to cache
+    objects.  We can run a few tests ... but it is easy to believe that
+    their caching is at least 80% as good as what we might be able to do
+    ... and that is all we need for a prototype.
+  * directory entry caching is not merely about eliminating KVS gets,
+    but also linear searches through partition objects.  But (a) we are
+    limiting our partition size to a few thousand bytes and (b) we can
+    keep them sorted.  That combination may make searches so fast that
+    (at least for the prototype) there is no point in trying to speed
+    them up with a directory entry cache. We can measure our own
+    insert/lookup performance and compare it with the big boys (ext3,
+    xfs, btrfs, zfs).  If we are in the same power of two, I think we
+    are good enough for a prototype.
+
+
+Joe's observations on the old locking code
+
+> I have needed to do this for a few months, and I apologize for taking
+> so long to do it, but I finally read all the code in the MergeWithPQFS
+> branch src directory.  Now that I have finished my first reading, it
+> is time for me to start making lame observations and asking naive
+> questions :-)
+>
+> The code in the FileSystemManager is pretty simple (modulo the
+> commented-out old stuff).
+>
+>   * The main thing I noted was commented out locking stuff.  We no
+>     longer have to synchronize the RAMcloud hash chains, but I assume
+>     we still have to serialize access to a particular file or directory.
+>   * [oxb]: agree, lock should be needed for particular file or
+>     directory, also lock should be be needed when update the partition
+>     object. Ramcloud provides version that can be used for detecting
+>     concurrent partition object update, but LevelDB has no version
+>     mechanism, so lock need be used.
+>   * [oxb]: when considering the implementation of the lock, the
+>     build-in spin lock can be used directly for RAMcloud since memory
+>     access is very fast; but for LevelDB, maybe spin lock isn't
+>     suitable and need more consideration.
+>   * It looks like the caching has been removed, and we will want to
+>     re-add them (at least for base objects and data chunks).  Also (I
+>     need to read this code a few more times but) it looks to me like
+>     we do not yet cache directory partitions.  Do we indeed do a new
+>     readFromLog on each directory partition operation?
+>   * [oxb]: For Ramcloud branch, there is only file object cache, no
+>     other cache. It seems reasonable to provide uniform cache for file
+>     object, directory object and the partition object; but I am not
+>     sure if it is very valuable to cache the data chunks since I feel
+>     leveldb and other DB should also include some internal cache.

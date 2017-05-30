@@ -1,0 +1,45 @@
+In June/July 2017, CB talked to a few people, and suggested the following areas
+of opportunity, and their respective needs.
+
+	large company IT
+
+	    Right now Office365 seems to be the sweet way to ensure that critical 
+	    data is backed up to the cloud ... and MS has done a smart thing by 
+	    combining the app service with managed storage.
+
+	    Many enterprises will not trust their data to a public cloud provider, 
+	    but want to keep it in a local object store.  
+	    Encryption is an absolute requirement.
+
+	    There are per-desktop/notebook file systems that need backing up, 
+	    but backup gateway products are pretty good, and no enterprise is 
+	    going to trust us with Tier-1 data any time soon.  Right now backup 
+	    products do not support tiering (out and back in), but probably will 
+	    by the time we get there.
+
+	Home users
+
+	    They have a significant problem with getting local files backed up 
+	    to the cloud, and we could offer significant value there.  The question
+	    is how we get ourselves injected into that market.  One suggestion is 
+	    that we offer a (free) Synology app that uses the local diskstation 
+	    for the KVS and backs up to the cloud.  This gets us testing and 
+	    reputation, and we can charge for in-cloud garbage collection (and 
+	    perhaps other support/integration services).
+
+	    This might lead to a disruptive open source model that would make 
+	    us valuable even if we were not generating significant revenue.
+
+	Storage for VMs
+
+	    EBS is painfully slow and per-VM SSD is very expensive.  Our 
+	    ability to offer SSD-like performance in limited SSD could be 
+	    a compelling value proposition ... and having all S3 I/O be 
+	    local would improve our reliability.
+
+	    We could offer our service as packages (to be installed on the 
+	    client VM), as an NFS server VM (to be mounted from a client VM), 
+	    or as a VM image with our filesystem stack installed on it.
+
+He has yet to talk to people who might want us as primary storage (because 
+of the latency and quick cloud backup).

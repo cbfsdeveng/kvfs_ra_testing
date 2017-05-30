@@ -1,0 +1,204 @@
+Summary of high level design decisions
+	tarballs are immutble
+		if/when we GC we will create new tarballs
+		(w/diferent names and contents), and we 
+		may delete the old ones to save space.
+
+		as a corrollary, all copies of any (completed)
+		tarball in any cache are guaranteed to be 
+		identical.
+
+	tarballs are encrypted and compressed
+
+		each individual file in a tarball may be 
+		encrypted and compressed.   Doing this at
+		the file (rather than tarball) level enables
+		us to:
+			garbage collect without knowing 
+			encryption keys
+
+			recover individual files without
+			having to decompress/decrypt the
+			entire tarball
+
+		if encryption is being used, names too are
+		encrypted.
+
+		if someone wants to recover compressed/encrypted
+		tarballs without us, we will give them a special 
+		version of tar.
+
+===============
+It seems that the obvious tar library is libarchive, and the obvious format is PAX:
+
+    libarchive seems to have the biggest following, and is the basis 
+    for tar support in most operating systems (not just Linux distros, 
+    but OSx and Windows as well).
+    [BUT later testing showed this to be not the case ...
+    	We want to find the format that can include all the info
+	we need.  Libarchive is a standard interface to the common
+	features of many formats]
+
+    USTAR (the tar default) extends the legacy TAR format to include 
+    character user names and longer file names, but does not give us 
+    I-node numbers (which we pretty clearly need).  
+    
+    The Portable Archive eXchange format (PAX, from POSIX.1) includes a 
+    little more information and unlimited length path names ... but more 
+    importantly includes vendor specific extensions (added in pseudo-files 
+    rather than additional fields in the USTAR header).  
+    Interesting extension formats include:
+        I-node metadata ... probably allows us to store I#, but I 
+			haven't yet found a description of this format item.
+        sparse header ... describes how the following (seemingly contiguous) 
+			content is to be distributed into a sparse file.
+        GNU dump dir ... ignored by tar, but allows us to add arbitrary 
+			directory descriptive data
+        extended headers ... arbitrary name=value attributes for the next file
+            SCHILY.dir ... contents of a directory (including files not in this tarball)
+            SCHILY.ino ... the I-node number
+            SCHILY.offset ... starting offset for an file split across multiple tarballs
+
+    These abilities look very good at the buzzword level, but I still need to:
+        understand the actual format of the underlying data
+        understand how to tease libarchive into letting me write and read these sections
+
+    I do see one potential wart.  Thus far we have considered all links 
+    to be equal, so that when we append a file to a tarball, we don't 
+    care which of its names we use.  But the tar link representation 
+    requires that we give the file name of the existing file, 
+    to which the new link is to be added.  This may require us to keep 
+    a little more information associated with each link (to help us 
+    decide which is older (the target) and which is newer (the link).
+
+The API documentation says that we create the headers (allocating space) 
+in pass 1, and then write the data in pass 2.  This suggests that it will 
+not be difficult to extract chunk offsets (for building up an index).
+
+Regarding tombstones:
+
+    these are purely for use during manual (with tar) restores.  
+    The TA has access to the most recent directory contents and so knows 
+    which files no longer exist.  
+    Given this purpose, I see two obvious approaches:
+
+        include a script (with some suitably obtuse name) in each tarball 
+	that will (after the tarball has been read in) delete files that 
+	should no longer be present in the covered directories.  
+	The user would run these scripts after untar-ing each tarball.
+
+        use some more esoteric format (in some CBFS extended attribute) 
+	and make our recovery version of the tar program understand them 
+	and perform the implied deletions.
+
+    I prefer the first option (because it is more human understandable).  
+    And even if we decide to build this functionality into our recovery 
+    tar program, we could still use a script of rm commands as the format 
+    for enumerating the files to be listed.
+
+Next on my list will be playing around with libarchive to see how many 
+of the above things I can figure out how to make it do.
+
+Tar format?
+
+        There is probably some small storage overhead (hundreds of bytes 
+	per file) associated with tar headers, but we aren't paying much for it.  
+	The fact that each file is a completely independent blob within 
+	the tarball is good (making it easy to recover only what we want).  
+	There is a much bigger question about indexes (below).
+
+        Mark does not yet see a reason to abandon (PAX) tar format ... but that 
+	may yet come.  However, moving away from libarchive makes it much easier 
+	for us to change our format.
+
+        If we did change the format, that format would have to embrace tombstones, and the
+        reader (we built for emergency recovery) would have to know how to process them.
+
+Index information to enable garbage collection?
+
+        We do not want to have to read an entire tarball in order to do garbage collection.  
+	This suggests that we want:
+
+            to have the info required for GC in a separate place 
+	    (e.g. the index or some other auxiliary file).
+
+            to have the data objects include a header with the required 
+	    information (so we can access that without pulling over the 
+	    entire data object)
+
+        But this question will not become pressing until we get serious 
+	about GC ... probably after we commit to building a product.
+
+==== The tarball creation process
+
+Joe and I discussed this Sunday, and he reminded me (oops!) that he 
+is maintaining, in every base object, for every file in the KVS, 
+a list of links (although at the moment, he is only tracking 
+the creation link).  This means that the TA can work up the chain of 
+back-links to establish a fully qualified path name for each updated file.
+
+Give that the KVS is probably maintaining a cache, it might not even 
+make sense to try maintaining our own cache of directory paths 
+(at least for the prototype).  Given this, the process of creating 
+the tarball is probably something like:
+
+    make a backwards pass to compress out operations on 
+    	deleted files and generate a i#s of files to be written out.
+
+    follow the back-links (in the KVS) to generate path names and 
+    	sort them into directories
+
+    add up the sizes and decide which files to put in which tarballs
+
+    for each tarball
+        create a table of contents file 
+		(w/o offsets) and make it the first file in the tarball
+        for each updated file
+            read the KVS to get the data
+            encrypt it
+            add it to the tarball
+            update the tarball offset in the in-memory table of contents
+        rewrite the table of contents w/real offsets
+    notify the proxy of the new object to be pushed to the cloud
+
+The table-of-contents format I have in mind is pretty simple:
+    magic number and version
+    name of tarball
+    creator and creation date
+    list of <I#, offset, length> 
+    	(I was thinking binary, but this might be a negligible savings)
+
+One other piece of tarball status we need to maintain is whether or 
+not the cloud has acknowledged its replication.  I can see the 
+TA wanting to know that objects have been persisted before evicting 
+them from the KVS.  
+
+My first thought was that these should be index entries ... but 
+this creates a strange index schism (the index of tarballs vs cloud index)
+So perhaps this is in a snapshot status object
+
+=== OLDER COMMENTS ====
+Tarballs:
+
+	http://www.fileformat.info/format/tar/corion.htm 
+	Standard tar does NOT seem to record contents for directories, 
+	just meta stuff. 
+	It does not, therefore, have a simple list of the files in a dir, 
+	though I don't think that would break the format. 
+	We should maybe investigate this to see if we can add such entries for 
+	dirs, maybe even <name,inode,xid> tuples.
+
+	We could arrange that the files under a dir are all consecutive in 
+	the tarball, except that the tarball may not contain all the files. 
+	So you'd still have to scan old tarballs and indexes.
+
+	Tar -G option seems to record some more info about dirs, but not clear 
+	exactly what (dir entry created w -G has non-zero size, whereas dir entry 
+	created without appears to be zero bytes long).
+
+	Since tar handles hard-links, I could create a hard link for each file to 
+	a file in known location (top level) that is that file's inode # 
+	(e.g. foo/bar linked to /inode#17).
+
+	However, do I still need to know the complete list of files in a given directory?
+

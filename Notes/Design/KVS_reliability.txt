@@ -1,0 +1,49 @@
+To: Cameron Bahar <cameron@parascale.com>, Joe Hopfield <joe@parascale.com>
+From: Mark Kampe <mark.kampe@gmail.com>
+Subject: implications of LDB unreliability
+Message-ID: <56609CF7.2040700@gmail.com>
+Date: Thu, 3 Dec 2015 11:50:15 -0800
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:38.0) Gecko/20100101
+ Thunderbird/38.3.0
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8; format=flowed
+Content-Transfer-Encoding: 7bit
+
+I did not do any serious study but merely browsed some high-order bits. 
+  Much of the buzz seemed to put blame, not on LDB's robustness but on 
+underlying file systems for providing the expected persistence 
+assurances.  But real study is probably warranted.
+
+I didn't look for info about RocksDB, and have no idea how the flash 
+optimizations may have changed its dependency on the underlying file 
+systems.
+
+I don't suggest that we should be able to tolerate arbitrary failures in 
+the underlying file system ... but we can ensure that we can detect them 
+and fail gracefully.  And if we have to provide better durability than 
+can be obtained from a local KVS, then, yes, I think we have to go back 
+to a distributed KVS.  But that might be a configuration decision that 
+customers make rather than an architectural decision that we make.
+
+As far as directional implications:
+
+	I think that building any kind of new file system is a
+	non-starter (due to the work, time, and risk).
+
+	I think that problems with other dominant KVS are not
+	reasons to build our own, because we are not smarter,
+	more experienced, or better funded than the people who
+	have built/are building the them.  Rather I take those
+	problems as a reason to make sure that we have the
+	architectural latitude to change KVS based on the
+	constraints we face at any given time.
+
+In general, my perspective is that:
+
+	exploiting recent technologies to do a better job of
+	solving a problem than has previously been possible
+	is a start-up opportunity
+
+	trying to develop new technologies is a research
+	project, and trying to do so in well served areas where
+	we lack competitive expertise is high risk research
