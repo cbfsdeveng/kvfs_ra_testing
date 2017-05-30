@@ -1,0 +1,20 @@
+#!/bin/sh
+
+###################################################################
+#   1. Run through a series of fio tests defined in *.fio files
+###################################################################
+
+set -x
+TEST_DIR=$(echo "$0" | sed 's,[^/]*$,,')
+
+export RUN_FAST=true
+
+files=$( ls $TEST_DIR/*.fio )
+
+for i in $files
+do
+	echo "_____________________________________________________________________________________"
+	echo "Testfile = $i"
+	fio $i
+done
+

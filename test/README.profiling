@@ -1,0 +1,15 @@
+A very brief note about cpu profiling.
+TODO(): more detail.
+
+After the filesystem has exited, it will dump profile data to /tmp/fuse_kvfs.prof.
+To analyze it:
+google-pprof  ../src/fuse_kvfs /tmp/fuse_kvfs.prof
+When google-pprof prompts, you can either just look at top cpu users:
+(pprof) top100
+
+or emit a fancy postscript cpu call graph:
+(pprof) gv
+
+
+
+

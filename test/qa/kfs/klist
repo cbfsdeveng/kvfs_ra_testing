@@ -1,0 +1,47 @@
+#! /usr/bin/perl -w
+#
+# print ops in friendly format
+# $Id:$
+#
+
+sub usage {
+  print "klist <kfs args>  do NOT put in directory name or DVv flags, e.g.\n";
+  print "\t./klist -m -n 10000\n";
+  print "\t./klist -n 10000\n";
+  print "\t./klist -z93 -m -n 100000\n";
+  exit(1);
+}
+
+usage if @ARGV == 0;
+
+my @kfs = qx(./kfs "-Dv" @ARGV "foo");
+
+# get rid of first three lines (open/DIST/START)
+# get rid of last two lines (TOTAL/ERROR)
+
+splice @kfs, 0, 3;
+splice @kfs, -2;
+#print "@kfs";
+
+
+my @kl = ();
+my @x = ();
+my %node;
+
+for (@kfs) {
+  chomp;
+  if (/roll/) {
+    if (@x) {
+      @roll = split / /, $x[0];
+      shift @x;
+      @op = split / /, $x[0];
+      shift @x;
+      my $n = @op;
+      chop $roll[0];
+      chop $op[0];
+      print "$roll[0] @op @x\n";
+    }
+    @x = ();
+  }
+  push @x, $_;
+}

@@ -1,0 +1,36 @@
+*** /dev/null
+--- /dev/null
+***************
+*** 40
+- export PQFS_CONFIG_FILE=${PQFS_CONFIG_FILE-test/test_basic_config.proto.txt}
+--- 46 -----
++ export PQFS_CONFIG_FILE=${PQFS_CONFIG_FILE-test/test_config.proto.txt}
+***************
+*** 42,44
+- # Create our config file from a template by substituting the above
+- # environment variables.
+- envsubst < ${PQFS_CONFIG_FILE} > $TEST_DIR/${CONFIG_FILE_LOCAL_PATH}
+--- 0 -----
+***************
+*** 48
+- export GLOG_use_rocksdb=1   # 0=>LEVELDB, 1=>ROCKSDB
+--- 0 -----
+***************
+*** 95
+- /usr/bin/time $FUSE_KVFS \
+--- 109 -----
++ $TIME_CMD $FUSE_KVFS \
+***************
+*** 99
+-         --use_rocksdb=${GLOG_use_rocksdb} \
+--- 0 -----
+***************
+*** 138
+- LEAVE_MOUNTED=1
+--- 0 -----
+***************
+*** 141
+-     sudo umount $M
+--- 153,154 -----
++     #sudo umount $M
++     fusermount -u $M

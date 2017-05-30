@@ -1,0 +1,10 @@
+[randwrite]
+ioengine=libaio
+iodepth=4
+rw=randwrite
+bs=512
+direct=1
+numjobs=1
+size=32m
+directory=mount
+thread

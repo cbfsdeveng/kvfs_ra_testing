@@ -1,0 +1,139 @@
+#! /usr/bin/perl -w
+#
+# find ops that pertain to a given node
+# $Id:$
+#
+
+sub usage {
+  print "kfind <kfs args> [-- node ...]\n";
+  print "do NOT put in directory name or DVv flags, e.g.\n";
+  print "no node prints all ops\n\n";
+  print "./kfind -m -n 10000 -- 1000001e\n";
+  print "./kfind -n 10000 -- 1000003e\n";
+  print "./kfind -z93 -m -n 100000\n";
+  exit(1);
+}
+
+usage if @ARGV == 0;
+
+my @args = ();
+my @list;
+my $x;
+
+while ($_ = shift @ARGV) {
+  if (/--/) { @list = @ARGV ; last ; }
+  else { push @args, $_; }
+}
+
+#print "args @args list @list \n";
+
+my @kfs = qx(./kfs "-Dv" @args "top");
+
+# get rid of first three lines (open/DIST/START)
+# get rid of last two lines (TOTAL/ERROR)
+
+splice @kfs, 0, 3;
+splice @kfs, -2;
+#print "@kfs";
+
+
+my @kl = ();
+my @x = ();
+my %node;
+my %link;
+
+for (@kfs) {
+  chomp;
+  if (/roll/) {
+    if (@x) {
+      my @roll = split / /, $x[0]; shift @x;
+      my @op = split / /, $x[0]; shift @x;
+      chop $roll[0]; chop $op[0];
+      my $o = shift @op; my $op_num = shift @roll;
+      my $n = @op;
+      if (!@list) {
+	print "$op_num $n $o @op @x\n";
+
+# Things that only affect a parent and child
+      } elsif ($o =~ /create|sym|mkdir|del|rmdir.|rmdir_r/) {
+	$dir = $op[0];
+	chop $dir if $o eq "rmdir_r";
+	@path = split m:/:, $dir;
+	$parent = $path[$#path-1];
+	$child = $path[$#path];
+	push @{$node{$parent}}, [$op_num, $o, @op, @x];
+	push @{$node{$child}}, [$op_num, $o, @op, @x];
+	push @{$link{$child}}, $child if $o =~ /create|sym|mkdir/;
+#	print "  add $parent $child @{$node{$parent}}\n";
+
+# rename and link have the same effect - a new alias
+# rename just means the old alias isn't used anymore
+
+      } elsif ($o =~ /link|rename/) {
+	@new = split m:/:, ($o eq "link") ? $op[0] : $op[2];
+	$nparent = $new[$#new-1];
+	$nchild = $new[$#new];
+
+	@old = split m:/:, ($o eq "link") ? $op[2] : $op[0];
+	$oparent = $old[$#old-1];
+	$ochild = $old[$#old];
+
+#print "link $nparent $nchild $oparent $ochild\n";
+
+# the nodes affected by the metadata op
+
+	push @{$node{$nparent}}, [$op_num, $o, @op, @x];
+	push @{$node{$nchild}}, [$op_num, $o, @op, @x];
+
+	push @{$node{$oparent}}, [$op_num, $o, @op, @x] if $nparent ne $oparent;
+	push @{$node{$ochild}}, [$op_num, $o, @op, @x];
+
+# the nodes for which this is a new alias, and the aliases for this node
+# N.B. ochild has us now too...
+
+	for (@{$link{$ochild}}) { push @{$link{$_}}, $nchild; }
+	push @{$link{$nchild}}, @{$link{$ochild}};
+
+
+# apply the op to any of the alias/links
+
+      } elsif ($o =~ /sync|trunc/) {
+	@path = split m:/:, $op[0];
+	$file = $path[$#path];
+      
+	for (@{$link{$file}}) {
+	  push @{$node{$_}}, [$op_num, $o, @op, @x];
+	}
+      } else {
+	print "WHAT IS $op_num $o @op @x\n";
+	exit(1);
+      }
+    }
+    @x = ();
+  }
+  push @x, $_;
+}
+
+#print "@list\n";
+
+for my $who (@list) {
+  my %found = ();
+
+  for my $l (@{$link{$who}}) {
+    for(@{$node{$l}}) {
+#print "$who $l @{$node{$l}}\n";
+      @x = @{$_};
+      $n = $x[0];
+      $found{$n} = [ @x ] if !defined($found{$n});
+    }
+  }
+
+  print "\nfound $who\n";
+
+  for (sort { $a <=> $b } keys %found) {
+    @x = @{$found{$_}};
+    $op_num = shift @x;
+    $o = shift @x;
+    printf("%-7d %-6s @x\n", $op_num, $o);
+  }
+}

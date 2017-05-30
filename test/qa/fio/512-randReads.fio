@@ -1,0 +1,9 @@
+[randread]
+ioengine=libaio
+iodepth=4
+rw=randread
+bs=512
+direct=1
+numjobs=1
+size=32m
+directory=mount

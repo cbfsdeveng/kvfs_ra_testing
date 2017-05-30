@@ -1,0 +1,9 @@
+[seqread]
+ioengine=libaio
+iodepth=4
+rw=read
+bs=4k
+direct=1
+numjobs=1
+size=32m
+directory=mount

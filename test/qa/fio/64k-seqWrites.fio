@@ -1,0 +1,10 @@
+[seqwrite]
+ioengine=libaio
+iodepth=4
+rw=write
+bs=64k
+direct=1
+numjobs=1
+size=32m
+directory=mount
+thread

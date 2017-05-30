@@ -1,0 +1,43 @@
+#!/bin/sh
+
+###########################################################
+# Test access to our AWS S3 Bucket using s3cmd and rclone
+# 
+# usage: ./s3_access_check [s3cmd]
+#
+#	if "s3cmd" is passed as an argument then s3cmd used
+#	otherwise fallback default option is rclone tool
+#
+#	s3cmd  config file --> ~/.s3cfg
+#	rclone config file --> ~/.rclone.conf
+#
+#	Default S3 {Bucket,user-credentials}={CBFS, dev}
+#
+###########################################################
+
+vfsid=vfs.$$.`date +%F%s`
+echo $vfsid
+
+[ $1 ] && echo "argument passed: $1"
+
+if [ $1 = "s3cmd" ]; then
+	echo "############################"
+	echo "using s3cmd to access AWS-S3"
+	echo "############################"
+	s3cmd -v ls s3://CBFS/$vfsid
+	s3cmd -v put $0 s3://CBFS/$vfsid/1
+	s3cmd -v put $0 s3://CBFS/$vfsid/2
+	s3cmd -v ls --recursive s3://CBFS/$vfsid/
+	s3cmd -v --recursive rm s3://CBFS/$vfsid
+	s3cmd -v ls s3://CBFS/$vfsid
+else
+	echo "#############################"
+	echo "using rclone to access AWS-S3"
+	echo "#############################"
+	rclone -v ls s3:CBFS/$vfsid
+	rclone -v copy $0 s3:CBFS/$vfsid
+	rclone -v copy /etc/hosts s3:CBFS/$vfsid
+	rclone -v ls s3:CBFS/$vfsid
+	rclone -v delete s3:CBFS/$vfsid
+	rclone -v ls s3:CBFS/$vfsid
+fi
