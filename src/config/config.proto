@@ -1,0 +1,163 @@
+/*
+ * File format for CBFS config data.
+ * Specified here using protocol-buffer syntax, we'll read and write the values
+ * from text files (each will contain a single instance of Config).
+ */
+
+syntax = "proto2";
+
+package pqfs.config.proto;
+
+/**
+ * TODO: Some fields from SuperBlock should be here.
+ * TODO: where there's overlap with SuperBlock, which wins?
+message Config {
+    optional int64 magic = 1;
+    optional string filesystem_name = 2;
+    optional string cloud_uri = 3;
+    optional int64 next_inode = 4;
+    optional int64 next_xid = 5;
+    optional int64 fs_id = 6;
+    optional int64 dev = 7;
+    optional int64 chunk_size = 8;
+
+    // TODO: default number of partitions per directory?
+    required string name = 1;
+    required string uuid = 2;   // Not sure if this should be string, bytes, or
+                                // 128bit int? 
+}
+ */
+
+/**
+ * There's one Config message per config file.
+ * (and perhaps stored in the cloud?)
+ * Will describe everything needed to create or mount a filesystem.
+ */
+message Config {
+    /**
+     * TODO: Where is this name used? User visible? Same as in SuperBlock?
+     */
+    optional string name = 1;
+    /**
+     * e.g. "01234567-8abc-def0-1234-56789abcdef0"
+     */
+    optional string uuid = 2;
+
+    optional Primary primary = 3;
+    optional KeyValueStore keyValueStore = 4;
+    optional Tiering tiering = 5;
+    optional Cloud cloud = 6;
+}
+
+
+/**
+ * Description of our primary copy.
+ * TODO: how/when is this created, consulted, changed?
+ */
+message Primary {
+    /**
+     * hostname of primary. TODO: when set? enforced? used?
+     * e.g. "mark-host.parascale.com"
+     */
+    optional string host = 1 [default="localhost"];
+    /**
+     * TODO: Definition?
+     */
+    optional int64 epoch = 2 [default=1];
+    /**
+     * When the filesystem was created.
+     * TODO: Mark's version was human readable, fwiw.
+     */
+    optional int64 startTime = 3 [default=0];
+    /**
+     * Enable fuse caching?
+     */
+    optional bool fuse_cache_enable = 4 [default=true];
+    /**
+     * Enable fuse direct-io? (probably not a good idea).
+     */
+    optional bool fuse_direct_io = 5 [default=false];
+}
+
+/* TODO: is this local only? */
+message KeyValueStore {
+    enum Type {
+        ROXDB = 0;
+        LEVELDB = 1;
+        RAMCLOUD = 2;
+        // ...
+    }
+    // TODO: must all copies use same kvstore type?
+    optional Type type = 1 [default = LEVELDB];
+    /**
+     * pathname used by the particular KVS.
+     * TODO: is this always a pathname? What about ramcloud?
+     * e.g. "/mnt/gargantua/KVS/TestFS.rdb"
+     */
+    optional string filename = 2 [default = ""];
+
+    // is this per mount or per filesystem? Local or global?
+    enum PersistenceRule {
+        ON_WRITE = 0;  // TODO: describe semantics exactly.
+        ON_CLOSE = 1;
+        LAZY = 2;
+    }
+    optional PersistenceRule persistenceRule = 3 [default = LAZY];
+    /**
+     * Maximum size of the KVS in bytes;
+     * (TODO: how enforced?)
+     * TODO: local only.
+     */
+    optional int64 maxSizeBytes = 4 [default = 100000000];
+}
+
+message Tiering {
+    optional string cacheDir = 1;  // "/var/cbfs/TestFS"
+    enum EncryptionAlgorithm {
+        UNENCRYPTED = 0;
+        AES_128 = 1;
+    }
+    optional EncryptionAlgorithm encryption = 2 [default = UNENCRYPTED];
+    /**
+     * where to find the key.
+     * e.g. "/home/markk/.ssh/TestFS.aes"
+     */
+    optional string encryptionKey = 3 [default = ""];
+
+    enum CompressionAlgorithm {
+        UNCOMPRESSED = 0;
+        ZIP = 1;
+        SNAPPY = 2;
+    };
+    optional CompressionAlgorithm compression = 4 [default = ZIP];
+    /**
+     * TODO: semantics?
+     */
+    optional int64 mirrorLagSeconds = 5 [default = 0];
+    /**
+     * Maximum size of the cache (where tarballs and logs are stored).
+     */
+    optional int64 cacheSizeBytes = 6 [default = 100000000]; 
+    /**
+     * TODO: ? semantics? enforced how?
+     */
+    optional int32 cacheFreePercent = 7 [default = 20];
+    /**
+     * Largest single object allowed (in bytes).
+     * TODO: semantics: what if > cacheSizeBytes?
+     */
+    optional int64 maxObjectSizeBytes = 8 [default = 1000000000];
+}
+
+message Cloud {
+    enum CloudAccessProtocol {
+        LOCAL = 0;
+        AMAZON_S3 = 1;
+        GOOGLE_STORAGE_V1 = 2;
+    }
+    optional CloudAccessProtocol protocol = 1 [default = AMAZON_S3];
+    /**
+     * e.g. "MarkKampe-TestFS.s3-website-us-west-1.amazonws.com"
+     */
+    optional string endpoint = 2;
+}
